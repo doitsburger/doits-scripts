@@ -84,9 +84,9 @@ This step is required for the script to function correctly.
 
 ---
 
-### 🎯 Doitsburger’s FF Target Finder + Attack Overlay
+### 🎯 Doitsburger’s FF Target Finder
 
-Quick target finder + START FIGHT overlay for attack pages. Fetches random targets from FFScouter based on your Fair Fight (FF) range, inactivity, and faction filters. Adds a pulsing **START FIGHT** overlay on attack pages for easier engagement.
+Quick target finder. Fetches random targets from FFScouter based on your Fair Fight (FF) range, inactivity, and faction filters.
 
 ### 🔑 API Requirement (Important)
 
@@ -99,7 +99,7 @@ Before using this script, you **must**:
 4. Use the **same API key** when prompted by the userscript
 
 **Install (Browser / Torn PDA):**  
-https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/ff-target-finder/DOITSBURGER's%20FF%20TARGET%20FINDER
+https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/ff-target-finder/DOITSBURGER's%20FF%20TARGET%20FINDER.js
 
 👉 After installing the userscript, you will be prompted to enter this API key **the first time you use the script**.  
 This step is required for the script to function correctly.
