@@ -2095,6 +2095,11 @@
  * @param {string} apiKey - Torn API key
  * @returns {Promise<number|null>} Faction ID or null
  */
+    /**
+ * Fetch user's own faction ID from Torn API.
+ * @param {string} apiKey - Torn API key
+ * @returns {Promise<number|null>} Faction ID or null
+ */
     async function fetchUserFactionId(apiKey) {
         // Try from page first (instant, no API call)
         const pageId = getUserFactionIdFromPage();
@@ -2107,13 +2112,22 @@
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT);
-            const response = await fetch(`https://api.torn.com/v2/user/?selections=profile&key=${encodeURIComponent(apiKey)}`, { signal: controller.signal });
+            const response = await fetch(
+                `https://api.torn.com/v2/user/?selections=profile&key=${encodeURIComponent(apiKey)}`,
+                { signal: controller.signal }
+            );
             clearTimeout(timeoutId);
             const data = await response.json();
-            if (!data.error && data.faction?.faction_id) {
-                userFactionId = data.faction.faction_id;
+            if (data.error) {
+                console.warn('[FF Scouter] User API error:', data.error);
+                return null;
             }
-            return userFactionId;
+            // v2 returns { profile: { faction_id: ... } }
+            const factionId = data.profile?.faction_id;
+            if (factionId) {
+                userFactionId = factionId;
+            }
+            return factionId || null;
         } catch (e) {
             console.warn('[FF Scouter] Error fetching user faction ID:', e);
             return null;
@@ -2186,6 +2200,55 @@
         } catch (e) {
             console.error('[FF Scouter] Error fetching user location:', e);
             return 'Torn';
+        }
+    }
+
+    /**
+ * Get the opponent faction ID from the user's current ranked war.
+ * @param {string} apiKey - Torn API key
+ * @returns {Promise<string|null>} Opponent faction ID or null if not in war
+ */
+    /**
+ * Get the opponent faction ID from the user's current active ranked war.
+ * @param {string} apiKey - Torn API key
+ * @returns {Promise<number|null>} Opponent faction ID or null if not in an active war
+ */
+    async function getWarOpponentFactionId(apiKey) {
+        if (!apiKey) return null;
+
+        // Ensure we have your own faction ID
+        const yourFactionId = userFactionId || await fetchUserFactionId(apiKey);
+        if (!yourFactionId) return null;
+
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT);
+            const response = await fetch(
+                `https://api.torn.com/v2/faction/${yourFactionId}?selections=rankedwars&key=${encodeURIComponent(apiKey)}`,
+                { signal: controller.signal }
+            );
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (data.error) {
+                console.warn('[FF Scouter] Ranked wars API error:', data.error);
+                return null;
+            }
+
+            const wars = data.rankedwars || [];
+            // Find an active war (winner === null) that includes your faction
+            const activeWar = wars.find(w =>
+                                        w.winner === null &&
+                                        w.factions &&
+                                        w.factions.some(f => f.id === yourFactionId)
+                                       );
+            if (!activeWar) return null;
+
+            // Find the opponent object and return its id
+            const opponent = activeWar.factions.find(f => f.id !== yourFactionId);
+            return opponent ? opponent.id : null;
+        } catch (e) {
+            console.error('[FF Scouter] Error fetching war opponent:', e);
+            return null;
         }
     }
 
@@ -2494,46 +2557,28 @@
  * @param {string} apiKey - Torn API key
  */
     async function loadDangerZones(content, apiKey) {
-        let yourFactionId = null;
-        let enemyFactionId = null;
-
-        // Try to get IDs from war page DOM
-        try {
-            const ids = getWarFactionIds();
-            if (ids && ids.yourFactionId && ids.enemyFactionId) {
-                yourFactionId = ids.yourFactionId;
-                enemyFactionId = ids.enemyFactionId;
-            }
-        } catch (e) { /* quiet */ }
-
-        // Fallback: try torn-data
+        // Always get your own faction ID from the API (ignore page DOM)
+        let yourFactionId = userFactionId;
         if (!yourFactionId) {
-            try {
-                const tornEl = document.getElementById('torn-data');
-                if (tornEl) {
-                    const data = JSON.parse(tornEl.textContent);
-                    yourFactionId = data?.user?.faction?.faction_id || null;
-                }
-            } catch (e) {}
+            yourFactionId = await fetchUserFactionId(apiKey);
         }
+        // Get the current war opponent from the rankedwars endpoint
+        const enemyFactionId = await getWarOpponentFactionId(apiKey);
 
-        // Fallback: API
+        // Debug – check the IDs (open the browser console to see these)
+        console.log('[Danger Tab] Your faction ID:', yourFactionId);
+        console.log('[Danger Tab] Enemy faction ID:', enemyFactionId);
+
         if (!yourFactionId) {
-            try {
-                const ufid = await fetchUserFactionId(apiKey);
-                if (ufid) yourFactionId = ufid;
-            } catch (e) {}
+            content.innerHTML = '<div class="error">Could not determine your faction. Check API key.</div>';
+            return;
         }
-
         if (!enemyFactionId) {
-            content.innerHTML = '<div class="error">Enemy faction not detected. Open this tab while on a ranked-war page.</div>';
-            return;
-        }
-        if (!yourFactionId) {
-            content.innerHTML = '<div class="error">Your faction ID could not be determined.</div>';
+            content.innerHTML = '<div class="error">No ranked war opponent detected.</div>';
             return;
         }
 
+        // Fetch both faction members from the Torn API
         let ownMembers, enemyMembers;
         try {
             [ownMembers, enemyMembers] = await Promise.all([
@@ -2550,10 +2595,13 @@
             return;
         }
 
-        // Fetch enemy FF data
+        // Debug – how many members did we actually get?
+        console.log('[Danger Tab] Own members count:', ownMembers.length);
+        console.log('[Danger Tab] Enemy members count:', enemyMembers.length);
+
+        // Fetch FF stats for all enemy members
         const allEnemyIds = enemyMembers.map(m => m.id).filter(Boolean);
         const uniqueEnemyIds = [...new Set(allEnemyIds)];
-
         if (uniqueEnemyIds.length > 0) {
             content.innerHTML = '<div class="loading">Fetching enemy stats...</div>';
             await new Promise((resolve) => {
@@ -2561,9 +2609,11 @@
             });
         }
 
+        // Build location maps for both factions
         const ownMap = buildMemberLocationMap(ownMembers);
         const enemyMap = buildMemberLocationMap(enemyMembers);
 
+        // Find overlapping countries
         const dangerZones = {};
         for (const [country, own] of Object.entries(ownMap)) {
             if (!enemyMap[country]) continue;
@@ -2587,6 +2637,7 @@
             return;
         }
 
+        // Render the danger zones (this part is unchanged from the original)
         content.innerHTML = '';
         sortedKeys.forEach(country => {
             const zone = dangerZones[country];
@@ -2595,81 +2646,81 @@
             ? `<img src="${flagUrl}" style="width:18px;height:12px;vertical-align:middle;margin-right:4px;" alt="">`
             : (COUNTRY_FLAG_MAP?.[country] || '\uD83C\uDF0D');
 
-            const group = document.createElement('div');
-            group.className = 'destination-group';
-            group.innerHTML = `
+        const group = document.createElement('div');
+        group.className = 'destination-group';
+        group.innerHTML = `
             <div class="group-header">
                 <span class="group-name">AT RISK ${flagHtml} ${country}</span>
                 <span class="collapse-icon">\u25BC</span>
             </div>
             <div class="group-members"></div>
         `;
-            const membersDiv = group.querySelector('.group-members');
+        const membersDiv = group.querySelector('.group-members');
 
-            // Friendly members
-            const friendly = [...zone.friendlyPresent.map(m => ({...m, type:'present'})),
-                              ...zone.friendlyTraveling.map(m => ({...m, type:'traveling'}))];
-            friendly.sort((a, b) => (b.bs || 0) - (a.bs || 0));
-            friendly.forEach(m => {
-                const icon = m.type === 'present' ? '\uD83D\uDCCD' : '\u2192';
+        // Friendly members
+        const friendly = [...zone.friendlyPresent.map(m => ({...m, type:'present'})),
+                          ...zone.friendlyTraveling.map(m => ({...m, type:'traveling'}))];
+        friendly.sort((a, b) => (b.bs || 0) - (a.bs || 0));
+        friendly.forEach(m => {
+            const icon = m.type === 'present' ? '\uD83D\uDCCD' : '\u2192';
+            const item = document.createElement('div');
+            item.className = 'member-item';
+            const onlineCircle = m.status === 'Online' ? '\uD83D\uDFE2' : (m.status === 'Idle' ? '\uD83D\uDFE1' : '\u26AB');
+            let etaText = '';
+            if (m.type === 'traveling' && m.remainingSeconds > 0) {
+                etaText = ` - ETA: ${formatTime(m.remainingSeconds * 1000)}`;
+            }
+            item.innerHTML = `${icon} ${onlineCircle} ${m.name} (\u2248 ${m.bsHuman || 'N/A'})${etaText}`;
+            membersDiv.appendChild(item);
+        });
+
+        // Enemy present
+        if (zone.enemyPresent.length) {
+            const present = [...zone.enemyPresent].sort((a, b) => (b.bs || 0) - (a.bs || 0));
+            const header = document.createElement('div');
+            header.className = 'member-item';
+            header.style.fontWeight = 'bold';
+            header.textContent = `\u2694\uFE0F Present (${present.length})`;
+            membersDiv.appendChild(header);
+            present.forEach(m => {
                 const item = document.createElement('div');
                 item.className = 'member-item';
-                const onlineCircle = m.status === 'Online' ? '\uD83D\uDFE2' : (m.status === 'Idle' ? '\uD83D\uDFE1' : '\u26AB');
-                let etaText = '';
-                if (m.type === 'traveling' && m.remainingSeconds > 0) {
-                    etaText = ` - ETA: ${formatTime(m.remainingSeconds * 1000)}`;
-                }
-                item.innerHTML = `${icon} ${onlineCircle} ${m.name} (\u2248 ${m.bsHuman || 'N/A'})${etaText}`;
+                const onlineCircle = m.status === 'Online' ? '\uD83D\uDD34' : (m.status === 'Idle' ? '\uD83D\uDFE1' : '\u26AB');
+                item.innerHTML = `${onlineCircle} ${m.name} (\u2248 ${m.bsHuman || 'N/A'})`;
                 membersDiv.appendChild(item);
             });
+        }
 
-            // Enemy present
-            if (zone.enemyPresent.length) {
-                const present = [...zone.enemyPresent].sort((a, b) => (b.bs || 0) - (a.bs || 0));
-                const header = document.createElement('div');
-                header.className = 'member-item';
-                header.style.fontWeight = 'bold';
-                header.textContent = `\u2694\uFE0F Present (${present.length})`;
-                membersDiv.appendChild(header);
-                present.forEach(m => {
-                    const item = document.createElement('div');
-                    item.className = 'member-item';
-                    const onlineCircle = m.status === 'Online' ? '\uD83D\uDD34' : (m.status === 'Idle' ? '\uD83D\uDFE1' : '\u26AB');
-                    item.innerHTML = `${onlineCircle} ${m.name} (\u2248 ${m.bsHuman || 'N/A'})`;
-                    membersDiv.appendChild(item);
-                });
-            }
-
-            // Enemy inbound
-            if (zone.enemyTraveling.length) {
-                const inbound = [...zone.enemyTraveling].sort((a, b) => (b.bs || 0) - (a.bs || 0));
-                const header = document.createElement('div');
-                header.className = 'member-item';
-                header.style.fontWeight = 'bold';
-                header.textContent = `\u2708\uFE0F Inbound (${inbound.length})`;
-                membersDiv.appendChild(header);
-                inbound.forEach(m => {
-                    const item = document.createElement('div');
-                    item.className = 'member-item';
-                    const onlineCircle = m.status === 'Online' ? '\uD83D\uDD34' : (m.status === 'Idle' ? '\uD83D\uDFE1' : '\u26AB');
-                    let etaText = '';
-                    if (m.remainingSeconds > 0) {
-                        etaText = ` - ETA: ${formatTime(m.remainingSeconds * 1000)}`;
-                    }
-                    item.innerHTML = `${onlineCircle} ${m.name} (\u2248 ${m.bsHuman || 'N/A'})${etaText}`;
-                    membersDiv.appendChild(item);
-                });
-            }
-
-            group.querySelector('.group-header').addEventListener('click', (e) => {
-                e.stopPropagation();
-                group.classList.toggle('collapsed');
-                const icon = group.querySelector('.collapse-icon');
-                icon.textContent = group.classList.contains('collapsed') ? '\u25B6' : '\u25BC';
+        // Enemy inbound
+        if (zone.enemyTraveling.length) {
+            const inbound = [...zone.enemyTraveling].sort((a, b) => (b.bs || 0) - (a.bs || 0));
+            const header = document.createElement('div');
+            header.className = 'member-item';
+            header.style.fontWeight = 'bold';
+            header.textContent = `\u2708\uFE0F Inbound (${inbound.length})`;
+            membersDiv.appendChild(header);
+            inbound.forEach(m => {
+                const item = document.createElement('div');
+                item.className = 'member-item';
+                const onlineCircle = m.status === 'Online' ? '\uD83D\uDD34' : (m.status === 'Idle' ? '\uD83D\uDFE1' : '\u26AB');
+                let etaText = '';
+                if (m.remainingSeconds > 0) {
+                    etaText = ` - ETA: ${formatTime(m.remainingSeconds * 1000)}`;
+                }
+                item.innerHTML = `${onlineCircle} ${m.name} (\u2248 ${m.bsHuman || 'N/A'})${etaText}`;
+                membersDiv.appendChild(item);
             });
+        }
 
-            content.appendChild(group);
+        group.querySelector('.group-header').addEventListener('click', (e) => {
+            e.stopPropagation();
+            group.classList.toggle('collapsed');
+            const icon = group.querySelector('.collapse-icon');
+            icon.textContent = group.classList.contains('collapsed') ? '\u25B6' : '\u25BC';
         });
+
+        content.appendChild(group);
+    });
     }
 
     /**
@@ -2770,13 +2821,16 @@
         }
 
         if (currentDestinationsMode === 'safe') {
+            // Unoccupied = countries with no enemy members
             try {
-                const factionId = getFactionIdFromContext();
-                if (!factionId) throw new Error('No faction detected. Open from a faction profile or war page.');
-
+                const enemyId = await getWarOpponentFactionId(apiKey);
+                if (!enemyId) {
+                    content.innerHTML = '<div class="error">No ranked war opponent detected.</div>';
+                    return;
+                }
                 const [userLocation, members] = await Promise.all([
                     getUserLocation(apiKey),
-                    fetchFactionMembers(factionId, apiKey)
+                    fetchFactionMembers(enemyId, apiKey)
                 ]);
 
                 const groups = groupMembersByDestination(members);
