@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         1 Doits FF Scouter
 // @namespace    https://github.com/doitsburger/doits-scripts
-// @version      2.0.0
+// @version      2.0.1
 // @description  Scouter tool for FF and BS Estimates on Torn. Attack button in status, extra row clean, destinations panel, sorting on your faction page, and last action sorting.
 // @author       rDacted, Weav3r, GFOUR - modded by Doitsburger
 // @match        https://www.torn.com/*
