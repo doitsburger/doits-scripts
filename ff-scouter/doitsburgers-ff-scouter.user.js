@@ -935,18 +935,19 @@
     }, 2000);
 
     // Prompt for Torn API key if FF Scouter key is set but Torn key is missing
-    if (!tornKey && key) {
-        const input = prompt(
-            'FF Scouter: Torn API Key Required\n\n' +
-            'Please enter your Torn API key (limited, from torn.com).\n' +
-            'This is needed for faction member data.',
-            ''
-        );
-        if (input && input.trim()) {
-            rD_setValue('torn_api_key', input.trim());
-            tornKey = input.trim();
-        }
+    // Prompt for Torn API key if FF Scouter key is set but Torn key is missing
+if (!tornKey && key) {
+    const input = prompt(
+        'FF Scouter: Torn API Key Required\n\n' +
+        'Please enter your Torn Public API key (from torn.com).\n' +
+        'This is needed for faction member data.',
+        ''
+    );
+    if (input && input.trim()) {
+        rD_setValue('torn_api_key', input.trim());
+        tornKey = input.trim();
     }
+}
 
     // =========================================================================
     // SECTION: Menu Commands
@@ -961,13 +962,13 @@
     });
 
     rD_registerMenuCommand('Enter Torn API Key', () => {
-        const userInput = prompt('Enter your Torn API key (limited access, from torn.com)', rD_getValue('torn_api_key', ''));
-        if (userInput !== null) {
-            rD_setValue('torn_api_key', userInput.trim());
-            tornKey = userInput.trim();
-            window.location.reload();
-        }
-    });
+    const userInput = prompt('Enter your Torn Public API key (from torn.com)', rD_getValue('torn_api_key', ''));
+    if (userInput !== null) {
+        rD_setValue('torn_api_key', userInput.trim());
+        tornKey = userInput.trim();
+        window.location.reload();
+    }
+});
 
     // =========================================================================
     // SECTION: Utility Functions
