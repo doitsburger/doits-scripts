@@ -58,7 +58,7 @@ Before using this script, you **must**:
 
 1. Register a **Torn Limited API key** at  
    **https://ffscouter.com**
-2. Register a **standard Torn API key** (for gathering non-FFscouter data, such as player stats, battle stats, or other Torn information used by the userscript)
+2. Register a **"Public" Torn API key** (for gathering non-FFscouter data, such as player stats, battle stats, or other Torn information used by the userscript)
 3. Use **both API keys** when prompted by the userscript
 
 > 💡 **Why two keys?**  
