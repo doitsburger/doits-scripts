@@ -112,7 +112,7 @@ nano server.js
 
 Delete anything already in the file and paste the complete server code.
 
-'''
+'''<script>
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -586,7 +586,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Factions: ${Object.keys(config.watchedFactions).length}`);
   console.log(`State file: ${STATE_FILE}`);
   console.log(`Config file: ${CONFIG_FILE}`);
-});'''
+});<script/>'''
 
 Save and Exit Nano
 
