@@ -55,7 +55,7 @@ Before using this script, you must:
 The first key (from ffscouter.com) handles FF‑specific data. The second key (a regular Torn API key) is required to retrieve all other non‑FFscouter data that the script needs to function fully.
 
 **Install (Browser / Torn PDA):**  
-`https://raw.githubusercontent.com/doitsburger/doits-scripts/main/ff-scouter/doitsburgers-ff-scouter.user.js`
+https://raw.githubusercontent.com/doitsburger/doits-scripts/main/ff-scouter/doitsburgers-ff-scouter.user.js
 
 👉 After installing the userscript, you will be prompted to enter both API keys the first time you visit a Torn profile page.  
 This step is required for the script to function correctly.
