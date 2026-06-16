@@ -102,7 +102,7 @@ Real‑time travel tracking for faction members. Fetches travel data directly fr
 You must register a standard Torn API key with **public access** (and faction permission). The script will prompt you for this key the first time you try to watch a faction.
 
 **Install (Browser / Torn PDA):**  
-`https://raw.githubusercontent.com/doitsburger/doits-scripts/main/travel-tracker/1-travel-tracker.user.js`  
+`https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/flight-tracker/travel-tracker.js`  
 *(If the actual URL differs, please replace it with the correct raw link.)*
 
 **👥 Attribution & Credits**  
