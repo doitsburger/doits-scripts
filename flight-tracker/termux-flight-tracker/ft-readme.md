@@ -113,7 +113,7 @@ nano server.js
 Delete anything already in the file and paste the complete server code.
 
 
-
+https://github.com/doitsburger/doits-scripts/blob/main/flight-tracker/termux-flight-tracker/server.js
 
 
 - Ctrl + O
@@ -169,12 +169,9 @@ Expected output:
 
 1. Open Kiwi Browser or Firefox.
 2. Install Tampermonkey.
-3. Create a new userscript that communicates with:
+3. Install UserScript
 
-GET    http://127.0.0.1:3000/api/state
-POST   /api/apikey
-POST   /api/watch
-DELETE /api/watch/:fid
+https://github.com/doitsburger/doits-scripts/blob/main/flight-tracker/termux-flight-tracker/termux-flight-tracker.js
 
 ---
 
