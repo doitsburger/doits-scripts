@@ -80,7 +80,7 @@ Before using this script, you must:
 - Use the same API key when prompted by the userscript  
 
 **Install (Browser / Torn PDA):**  
-`https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/ff-target-finder/DOITSBURGER's%20FF%20TARGET%20FINDER.js`
+https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/ff-target-finder/DOITSBURGER's%20FF%20TARGET%20FINDER.js
 
 👉 After installing the userscript, you will be prompted to enter this API key the first time you use the script.  
 This step is required for the script to function correctly.
@@ -102,8 +102,7 @@ Real‑time travel tracking for faction members. Fetches travel data directly fr
 You must register a standard Torn API key with **public access** (and faction permission). The script will prompt you for this key the first time you try to watch a faction.
 
 **Install (Browser / Torn PDA):**  
-`https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/flight-tracker/travel-tracker.js`  
-*(If the actual URL differs, please replace it with the correct raw link.)*
+https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/flight-tracker/travel-tracker.js
 
 **👥 Attribution & Credits**  
 Original work by **doitsburger**. No external dependencies – all processing runs client‑side.
@@ -115,7 +114,7 @@ Adds a simple custom background to Torn.com with a minimal emoji toggle button.
 Lightweight, clean, and works seamlessly on both browser and Torn PDA.
 
 **Install (Browser / Torn PDA):**  
-`https://raw.githubusercontent.com/doitsburger/doits-scripts/main/background-image/background`
+https://raw.githubusercontent.com/doitsburger/doits-scripts/main/background-image/background
 
 ---
 
