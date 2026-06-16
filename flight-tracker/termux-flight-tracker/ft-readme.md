@@ -1,12 +1,10 @@
-✈️ Torn Travel Tracker
-
-Android Setup Guide
+# ✈️ Torn Travel Tracker – Android Setup Guide
 
 Runs a 24/7 background server on your phone that polls Torn APIs every 20 seconds and sends native notifications when enemies fly to your destination or land soon.
 
 ---
 
-What This Does
+## What This Does
 
 - Runs a persistent background server on your Android phone using Termux.
 - Polls Torn APIs every 20 seconds — works even when your browser is closed.
@@ -15,286 +13,302 @@ What This Does
 
 ---
 
-Prerequisites
+## Prerequisites
 
-App| Where to Get It
-Termux| F-Droid (NOT Google Play)
-Termux:API| F-Droid
-Kiwi Browser or Firefox| Google Play or F-Droid
-Tampermonkey| Browser Extension Store
+| App | Where to Get It |
+|-----|----------------|
+| Termux | [F-Droid](https://f-droid.org/en/packages/com.termux/) (NOT Google Play) |
+| Termux:API | [F-Droid](https://f-droid.org/en/packages/com.termux.api/) |
+| Kiwi Browser or Firefox | Google Play or F-Droid |
+| Tampermonkey | Browser Extension Store |
 
-«⚠️ Important: Install Termux and Termux:API from F-Droid. The Google Play versions are deprecated and do not work correctly.»
-
----
-
-Table of Contents
-
-1. Install Termux & Termux:API
-2. Disable Android Battery Kill
-3. Install Node.js
-4. Create the Server Directory
-5. Create "server.js"
-6. Set Your API Key
-7. Start the Server
-8. Verify the Server
-9. Install the Browser Userscript
-10. Using the Tracker
-11. Making It Persistent (Background Mode)
-12. Auto-Start on Boot
-13. Updating the Server
-14. Troubleshooting
-15. Quick Command Reference
+> ⚠️ **Important:** Install Termux and Termux:API from F-Droid. The Google Play versions are deprecated and do not work correctly.
 
 ---
 
-1. Install Termux & Termux:API
+## Table of Contents
+
+- [Install Termux & Termux:API](#install-termux--termuxapi)
+- [Disable Android Battery Kill](#disable-android-battery-kill)
+- [Install Node.js](#install-nodejs)
+- [Create the Server Directory](#create-the-server-directory)
+- [Create "server.js"](#create-serverjs)
+- [Set Your API Key](#set-your-api-key)
+- [Start the Server](#start-the-server)
+- [Verify the Server](#verify-the-server)
+- [Install the Browser Userscript](#install-the-browser-userscript)
+- [Using the Tracker](#using-the-tracker)
+- [Making It Persistent (Background Mode)](#making-it-persistent-background-mode)
+- [Auto‑Start on Boot](#auto-start-on-boot)
+- [Updating the Server](#updating-the-server)
+- [Troubleshooting](#troubleshooting)
+- [Quick Command Reference](#quick-command-reference)
+
+---
+
+## Install Termux & Termux:API
 
 1. Download and install both apps from F-Droid.
 2. Open Termux.
 3. Run the initial setup:
 
-pkg update && pkg upgrade -y
+   ```bash
+   pkg update && pkg upgrade -y
+   ```
 
-Type y and press Enter when prompted.
+   Type `y` and press Enter when prompted.
 
 ---
 
-2. Disable Android Battery Kill
+## Disable Android Battery Kill
 
 Android will often kill background applications to save battery. You must prevent this for Termux.
 
-Steps
+**Steps**
 
-1. Open Android Settings → Apps → Termux
-2. Tap Battery → Unrestricted (or Don't Optimize)
-3. Repeat for Termux:API
+- Open **Android Settings → Apps → Termux**
+- Tap **Battery → Unrestricted** (or **Don't Optimize**)
+- Repeat for **Termux:API**
 
-Additional Steps (Samsung, Xiaomi, OnePlus, etc.)
+**Additional Steps (Samsung, Xiaomi, OnePlus, etc.)**
 
-- Open Termux in Recent Apps
+- Open Termux in **Recent Apps**
 - Tap the app icon
-- Select Lock
-- Disable Put unused apps to sleep
+- Select **Lock**
+- Disable **Put unused apps to sleep**
 
 ---
 
-3. Install Node.js
+## Install Node.js
 
 In Termux, run:
 
+```bash
 pkg install nodejs termux-api -y
+```
 
 Verify installation:
 
+```bash
 node --version
+```
 
-Expected output:
-
-v18+
-
-or
-
-v20+
+Expected output: `v18+` or `v20+`.
 
 ---
 
-4. Create the Server Directory
+## Create the Server Directory
 
+```bash
 mkdir -p ~/torn-tracker && cd ~/torn-tracker
+```
 
 ---
 
-5. Create server.js
+## Create "server.js"
 
 Create the server file:
 
+```bash
 nano server.js
+```
 
-Delete anything already in the file and paste the complete server code.
+Delete anything already in the file and paste the complete server code from:  
+[https://github.com/doitsburger/doits-scripts/blob/main/flight-tracker/termux-flight-tracker/server.js](https://github.com/doitsburger/doits-scripts/blob/main/flight-tracker/termux-flight-tracker/server.js)
 
-
-https://github.com/doitsburger/doits-scripts/blob/main/flight-tracker/termux-flight-tracker/server.js
-
-
-- Ctrl + O
-- Enter
-- Ctrl + X
+- `Ctrl + O` → Enter
+- `Ctrl + X`
 
 ---
 
-6. Set Your API Key
+## Set Your API Key
 
 Create the configuration file:
 
+```bash
 nano config.json
+```
 
 Paste:
 
-{
-  "apiKey": "YOUR_API_KEY",
-  "watchedFactions": {}
-}
+```json
+{ "apiKey": "YOUR_API_KEY", "watchedFactions": {} }
+```
 
 Save and exit Nano.
 
 ---
 
-7. Start the Server
+## Start the Server
 
+```bash
 cd ~/torn-tracker
 termux-wake-lock
 nohup node server.js > tracker.log 2>&1 &
+```
 
 ---
 
-8. Verify the Server
+## Verify the Server
 
 Run:
 
+```bash
 curl http://127.0.0.1:3000/api/health
+```
 
 Expected output:
 
-{
-  "status": "ok",
-  "uptime": 12345,
-  "apiKeySet": true,
-  "watchedCount": 0,
-  "lastScanTime": 1234567890
-}
+```json
+{ "status": "ok", "uptime": 12345, "apiKeySet": true, "watchedCount": 0, "lastScanTime": 1234567890 }
+```
 
 ---
 
-9. Install the Browser Userscript
+## Install the Browser Userscript
 
-1. Open Kiwi Browser or Firefox.
-2. Install Tampermonkey.
-3. Install UserScript
-
-https://github.com/doitsburger/doits-scripts/blob/main/flight-tracker/termux-flight-tracker/termux-flight-tracker.js
-
----
-
-10. Using the Tracker
-
-1. Visit any faction profile page.
-2. Use the userscript to watch factions.
-3. The server scans every 20 seconds.
-4. Receive Android notifications when:
-   - Enemies fly to your destination.
-   - Enemies are landing soon.
-
-Status Indicators
-
-Status| Meaning
-🟢 Green| Server online, API key configured
-🟠 Orange| Server online, API key missing
-🔴 Red| Server offline
+1. Open **Kiwi Browser** or **Firefox**.
+2. Install [Tampermonkey](https://www.tampermonkey.net/).
+3. Install the userscript from:  
+   `https://raw.githubusercontent.com/doitsburger/doits-scripts/main/flight-tracker/termux-flight-tracker/termux-flight-tracker.js`
 
 ---
 
-11. Making It Persistent (Background Mode)
+## Using the Tracker
+
+- Visit any faction profile page.
+- Use the userscript to watch factions.
+- The server scans every 20 seconds.
+- Receive Android notifications when:
+  - Enemies fly to your destination.
+  - Enemies are landing soon.
+
+**Status Indicators**
+
+| Status | Meaning |
+|--------|---------|
+| 🟢 Green | Server online, API key configured |
+| 🟠 Orange | Server online, API key missing |
+| 🔴 Red | Server offline |
+
+---
+
+## Making It Persistent (Background Mode)
 
 Start in background:
 
+```bash
 cd ~/torn-tracker
 termux-wake-lock
 nohup node server.js > tracker.log 2>&1 &
+```
 
 Check if running:
 
+```bash
 ps aux | grep node
+```
 
 View logs:
 
+```bash
 tail -f ~/torn-tracker/tracker.log
+```
 
 Stop the server:
 
+```bash
 killall node
+```
 
 Force stop if required:
 
+```bash
 kill -9 $(ps aux | grep "server.js" | grep -v grep | awk '{print $2}')
+```
 
 ---
 
-12. Auto-Start on Boot
+## Auto‑Start on Boot
 
-Install Termux:Boot
+1. **Install Termux:Boot** from F-Droid.
 
-Install Termux:Boot from F-Droid.
+2. **Create Boot Script**
 
-Create Boot Script
+   ```bash
+   mkdir -p ~/.termux/boot
+   nano ~/.termux/boot/start-tracker.sh
+   ```
 
-mkdir -p ~/.termux/boot
-nano ~/.termux/boot/start-tracker.sh
+   Paste:
 
-Paste:
+   ```bash
+   #!/data/data/com.termux/files/usr/bin/bash
+   termux-wake-lock
+   cd ~/torn-tracker
+   nohup node server.js > tracker.log 2>&1 &
+   ```
 
-#!/data/data/com.termux/files/usr/bin/bash
+   Make executable:
 
-termux-wake-lock
-cd ~/torn-tracker
-nohup node server.js > tracker.log 2>&1 &
+   ```bash
+   chmod +x ~/.termux/boot/start-tracker.sh
+   ```
 
-Make executable:
-
-chmod +x ~/.termux/boot/start-tracker.sh
-
-Finally, open Termux:Boot once.
+3. Finally, open **Termux:Boot** once.
 
 ---
 
-13. Updating the Server
+## Updating the Server
 
+```bash
 killall node
-
 cd ~/torn-tracker
-
 cp state.json state.json.backup
 cp config.json config.json.backup
-
 nano server.js
+```
 
-Paste the updated version and save.
-
+Paste the updated version and save.  
 Restart:
 
+```bash
 termux-wake-lock
 nohup node server.js > tracker.log 2>&1 &
+```
 
 ---
 
-14. Troubleshooting
+## Troubleshooting
 
-Problem| Fix
-Local Server Offline| Start the server again in Termux
-No notifications| Test with "termux-notification"
-Failed to watch faction| API key missing or server offline
-Server won't stop| Use the "kill -9" command
-High battery usage| Increase "SCAN_INTERVAL_MS"
-Termux keeps getting killed| Disable battery optimisation
-Players stuck landing| Latest "server.js" fixes this automatically
-
----
-
-15. Quick Command Reference
-
-Task| Command
-Start server (foreground)| "cd ~/torn-tracker && node server.js"
-Start server (background)| "nohup node server.js > tracker.log 2>&1 &"
-Check if running| "ps aux | grep node"
-View logs| "tail -f ~/torn-tracker/tracker.log"
-Stop server| "killall node"
-Health check| "curl http://127.0.0.1:3000/api/health"
-Reset data| "rm ~/torn-tracker/state.json"
-Edit config| "nano ~/torn-tracker/config.json"
+| Problem | Fix |
+|---------|-----|
+| Local Server Offline | Start the server again in Termux |
+| No notifications | Test with `termux-notification` |
+| Failed to watch faction | API key missing or server offline |
+| Server won't stop | Use the `kill -9` command |
+| High battery usage | Increase `SCAN_INTERVAL_MS` |
+| Termux keeps getting killed | Disable battery optimisation |
+| Players stuck landing | Latest `server.js` fixes this automatically |
 
 ---
 
-🎉 Enjoy Never Missing an Enemy Flight Again!
+## Quick Command Reference
 
+| Task | Command |
+|------|---------|
+| Start server (foreground) | `cd ~/torn-tracker && node server.js` |
+| Start server (background) | `nohup node server.js > tracker.log 2>&1 &` |
+| Check if running | `ps aux | grep node` |
+| View logs | `tail -f ~/torn-tracker/tracker.log` |
+| Stop server | `killall node` |
+| Health check | `curl http://127.0.0.1:3000/api/health` |
+| Reset data | `rm ~/torn-tracker/state.json` |
+| Edit config | `nano ~/torn-tracker/config.json` |
+
+---
+
+🎉 **Enjoy Never Missing an Enemy Flight Again!**  
 Your Torn Travel Tracker is now running 24/7, scanning for hostile travel activity and delivering native Android alerts directly to your device.
 
 ✈️🔔
