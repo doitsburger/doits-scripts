@@ -170,7 +170,7 @@ Expected output:
 1. Open **Kiwi Browser** or **Firefox**.
 2. Install [Tampermonkey](https://www.tampermonkey.net/).
 3. Install the userscript from:  
-   `https://raw.githubusercontent.com/doitsburger/doits-scripts/main/flight-tracker/termux-flight-tracker/termux-flight-tracker.js`
+   https://raw.githubusercontent.com/doitsburger/doits-scripts/main/flight-tracker/termux-flight-tracker/termux-flight-tracker.js
 
 ---
 
