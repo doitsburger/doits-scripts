@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 TERMUX Flight Tracker (Local Server Client) - v12.3 Tabs Revamp
+// @name         1 TERMUX Flight Tracker (Local Server Client) - v12.7 Honor Bars + Panel Watch Button
 // @namespace    https://github.com/your-repo
-// @version      12.3
-// @description  Premium UI client with Outbound/Return tabs, clickable names, and browser notifications
+// @version      12.7
+// @description  Premium UI client with honor bars behind duration bar and watch button in panel header
 // @author       Doitsburger
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -33,6 +33,36 @@
     "South Africa": { "Commercial": 297, "Personal": 208, "Private": 149 }
   };
 
+  // ----- HONOR BAR MAPPING (Torn honor IDs for all travel destinations) -----
+  const HONOR_IDS = {
+    "Argentina": 66,
+    "Canada": 75,
+    "China": 76,
+    "Japan": 97,
+    "Mexico": 104,
+    "South Africa": 119,
+    "Switzerland": 123,
+    "United Arab Emirates": 126,
+    "UAE": 126,
+    "United Kingdom": 127,
+    "UK": 127,
+    "Cayman Islands": 775,
+    "Hawaii": 133      // Hula honor
+  };
+
+  function getHonorImageUrl(locationName) {
+    if (!locationName) return null;
+    let normalized = locationName.trim();
+    if (normalized === "UK") normalized = "United Kingdom";
+    if (normalized === "UAE") normalized = "United Arab Emirates";
+
+    const honorId = HONOR_IDS[normalized];
+    if (honorId) {
+      return `https://www.torn.com/images/honors/${honorId}/f.png`;
+    }
+    return null;
+  }
+
   let state = {
     apiKeySet: false,
     watchedFactions: {},
@@ -44,7 +74,7 @@
     friendlyAbroad: [],
     lastPollTime: 0,
     serverOnline: false,
-    activeTab: 'all',                   // 'all' | 'outbound' | 'return'
+    activeTab: 'all',
     previousMembers: {},
     notifiedFlights: {}
   };
@@ -202,6 +232,8 @@
       }
 
       .tt-member-card {
+        position: relative;
+        overflow: hidden;
         background: var(--tt-bg-card);
         border-radius: var(--tt-radius-md);
         border: 1px solid var(--tt-border-subtle);
@@ -266,6 +298,21 @@
         margin-top: 6px;
       }
 
+      /* Honor bar background inside progress area */
+      .tt-progress-bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        opacity: 0.35;
+        z-index: 0;
+        pointer-events: none;
+      }
+
       .tt-progress-labels {
         position: absolute;
         top: -2px;
@@ -276,6 +323,7 @@
         display: flex;
         justify-content: space-between;
         padding: 0 4px;
+        z-index: 1;
       }
 
       .tt-progress-track {
@@ -287,6 +335,7 @@
         background: rgba(255,255,255,0.06);
         border-radius: 999px;
         overflow: hidden;
+        z-index: 1;
       }
 
       .tt-progress-fill {
@@ -305,6 +354,7 @@
         border-radius: 50%;
         border: 2px solid #111;
         box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+        z-index: 1;
       }
 
       .tt-progress-plane {
@@ -313,6 +363,7 @@
         font-size: 13px;
         filter: drop-shadow(0 1px 2px rgba(0,0,0,0.7));
         transition: left 1s linear, transform var(--tt-transition-fast);
+        z-index: q;
       }
 
       .tt-section-title {
@@ -405,6 +456,31 @@
       .tt-dot--apikey {
         background: var(--tt-warning);
       }
+
+      /* Watch button in panel header */
+      .tt-watch-btn {
+        background: none;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 999px;
+        color: #fff;
+        cursor: pointer;
+        padding: 4px 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background var(--tt-transition-fast), border-color var(--tt-transition-fast);
+      }
+      .tt-watch-btn:hover {
+        background: rgba(255,255,255,0.08);
+        border-color: rgba(255,255,255,0.24);
+      }
+      .tt-watch-btn--active {
+        background: rgba(76,175,80,0.24);
+        border-color: rgba(76,175,80,0.6);
+      }
+      .tt-watch-btn--active:hover {
+        background: rgba(76,175,80,0.36);
+      }
     `;
     document.head.appendChild(style);
   }
@@ -490,7 +566,6 @@
           if (!state.notifiedFlights[flightKey]) {
             state.notifiedFlights[flightKey] = true;
 
-            // Periodic cleanup
             const keys = Object.keys(state.notifiedFlights);
             if (keys.length > 100) {
               const cutoff = Date.now() - 24 * 3600 * 1000;
@@ -611,7 +686,6 @@
     if (!name) name = `Faction ${fid}`;
     try {
       await serverRequest('POST', '/api/watch', { fid, name });
-      updateButtonOnPage(fid);
       state.selectedFactionId = fid;
       if (!state.panelVisible) createPanel();
       else updatePanelContent();
@@ -626,9 +700,6 @@
       .then(() => {
         if (state.selectedFactionId === fid) state.selectedFactionId = null;
         updatePanelContent();
-        if (isFactionProfilePage() && getCurrentFactionIdFromUrl() === fid) {
-          updateButtonOnPage(fid);
-        }
       })
       .catch(err => console.error('Failed to remove faction:', err.message));
   }
@@ -643,9 +714,9 @@
     icon.style.cssText = `
       position: fixed;
       bottom: 82px;
-      right: 10px;
-      width: 46px;
-      height: 46px;
+      right: 2px;
+      width: 28px;
+      height: 40px;
       border-radius: 999px;
       background: radial-gradient(circle at 30% 0, rgba(255,255,255,0.16), transparent 55%), rgba(18,18,18,0.96);
       border: 1px solid rgba(255,255,255,0.12);
@@ -654,7 +725,7 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      z-index: 10000;
+      z-index: 100000;
       color: #fff;
       font-size: 22px;
       backdrop-filter: blur(18px);
@@ -669,7 +740,7 @@
     const dot = document.createElement('div');
     dot.id = 'travel-tracker-status';
     dot.className = 'tt-dot tt-dot--offline';
-    dot.style.cssText = `position:absolute; top:4px; right:4px;`;
+    dot.style.cssText = `position:absolute; top:2px; right:8px;`;
 
     icon.appendChild(inner);
     icon.appendChild(dot);
@@ -718,10 +789,10 @@
     panel.className = 'tt-panel tt-scrollbar';
     panel.style.cssText = `
       position: fixed; left: 50%; bottom: 0; transform: translate(-50%, 100%);
-      width: min(420px, calc(100vw - 32px)); max-width: 480px; max-height: 78vh;
+      width: min(420px, calc(92vw - 32px)); max-width: 480px; max-height: 78vh;
       background: var(--tt-bg-elevated); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
       border-top-left-radius: var(--tt-radius-lg); border-top-right-radius: var(--tt-radius-lg);
-      box-shadow: var(--tt-shadow-strong); padding: 14px 16px 18px 16px; z-index: 9999;
+      box-shadow: var(--tt-shadow-strong); padding: 14px 16px 18px 16px; z-index: 999999;
       color: var(--tt-text-main); display: flex; flex-direction: column; box-sizing: border-box;
       overflow-y: auto; transition: transform var(--tt-transition-med);
     `;
@@ -890,18 +961,51 @@
       const fid = e.target.getAttribute('data-fid');
       if (fid) removeWatchedFaction(fid);
     });
+
+    // Watch button in faction header (only on faction profile page)
+    const watchBtn = document.getElementById('tt-watch-faction-header');
+    if (watchBtn) {
+      watchBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const fid = getCurrentFactionIdFromUrl();
+        if (fid) {
+          if (state.watchedFactions[fid]) {
+            removeWatchedFaction(fid);
+          } else {
+            addFactionToWatch(fid);
+          }
+        }
+      });
+    }
   }
 
   function renderFactionList() {
     const fids = Object.keys(state.watchedFactions);
     let html = `<div style="margin-top:4px;">`;
-    html += `<div class="tt-section-title" style="margin-bottom:6px;">Watched factions</div>`;
+
+    // Add watch button in header if on faction profile page
+    const currentFid = getCurrentFactionIdFromUrl();
+    if (isFactionProfilePage() && currentFid) {
+      const isWatched = !!state.watchedFactions[currentFid];
+      html += `
+        <div class="tt-row" style="margin-bottom:8px;">
+          <div class="tt-section-title">Watched factions</div>
+          <button id="tt-watch-faction-header" class="tt-watch-btn ${isWatched ? 'tt-watch-btn--active' : ''}" title="${isWatched ? 'Stop watching this faction' : 'Watch this faction'}">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="6 5 28 28">
+              <path d="M23,23.5a2,2,0,1,1,2,2A2,2,0,0,1,23,23.5Zm-10,0a2,2,0,1,1,2,2A2,2,0,0,1,13,23.5Zm1-7a2.15,2.15,0,0,0-2,2v5a3.23,3.23,0,0,0,3,3,3.23,3.23,0,0,0,3-3v-2h1v-1h2v1h1v2a3.23,3.23,0,0,0,3,3,3.23,3.23,0,0,0,3-3v-5a2.15,2.15,0,0,0-2-2v-2a1.08,1.08,0,0,0-1-1v-1h1v-2H22v2h1v1l-3,1.69L17,13.5v-1h1v-2H14v2h1v1a1.08,1.08,0,0,0-1,1Z" fill="${isWatched ? '#C8E6C9' : 'white'}"></path>
+            </svg>
+          </button>
+        </div>
+      `;
+    } else {
+      html += `<div class="tt-section-title" style="margin-bottom:6px;">Watched factions</div>`;
+    }
 
     if (fids.length === 0) {
       html += `
         <div style="padding:14px 10px; border-radius:var(--tt-radius-md); border:1px dashed rgba(255,255,255,0.18); background:rgba(255,255,255,0.02); font-size:11px; color:var(--tt-text-soft); text-align:center;">
           No factions watched yet.<br>
-          Visit a faction profile and use the <span style="font-weight:600;">WATCH</span> button on the banner.
+          Visit a faction profile and use the <span style="font-weight:600;">✈️</span> button above to start watching.
         </div>
       `;
     } else {
@@ -938,6 +1042,17 @@
     return html;
   }
 
+  // ----- Get honor bar background for a member (only for progress area) -----
+  function getBackgroundForMember(m) {
+    if (m.status === 'traveling') {
+      const location = (m.destination === 'Torn') ? m.origin : m.destination;
+      return getHonorImageUrl(location);
+    } else if (m.status === 'landed') {
+      return getHonorImageUrl(m.destination);
+    }
+    return null;
+  }
+
   function renderFactionMembers(fid) {
     const faction = state.watchedFactions[fid];
     const name = faction.name || `Faction ${fid}`;
@@ -948,7 +1063,7 @@
     const landed = [];
     for (const xid in members) {
       const m = members[xid];
-      if (!m.xid) m.xid = xid; // ensure xid is set
+      if (!m.xid) m.xid = xid;
       if (m.status === 'traveling') inflight.push(m);
       else if (m.status === 'landed') landed.push(m);
     }
@@ -962,7 +1077,7 @@
 
     let allToShow = [];
     if (state.activeTab === 'all') {
-      allToShow = [...landed, ...inflight]; // landed at top, then outbound+return
+      allToShow = [...landed, ...inflight];
     } else if (state.activeTab === 'outbound') {
       allToShow = inflight.filter(m => m.destination !== 'Torn');
     } else if (state.activeTab === 'return') {
@@ -1015,10 +1130,13 @@
         const routeText = isReturn ? `← ${m.origin}` : `${m.origin} → ${m.destination}`;
         const xid = m.xid || '';
 
+        const backgroundUrl = getBackgroundForMember(m);
+        const progressBgHtml = backgroundUrl ? `<div class="tt-progress-bg" style="background-image: url('${backgroundUrl}');"></div>` : '';
+
         if (isLanded) {
-          html += renderLandedCard(m, routeText, xid);
+          html += renderLandedCard(m, routeText, xid, progressBgHtml);
         } else {
-          html += renderTravelCard(m, routeText, now, isReturn, xid);
+          html += renderTravelCard(m, routeText, now, isReturn, xid, progressBgHtml);
         }
       }
     }
@@ -1027,8 +1145,9 @@
     return html;
   }
 
-  function renderLandedCard(m, routeText, xid) {
+  function renderLandedCard(m, routeText, xid, progressBgHtml) {
     const landedTimeStr = formatWallClock(m.landedAt);
+    // Landed card has no progress bar, so we don't show honor background
     return `
       <div class="tt-member-card" style="background:radial-gradient(circle at 0 0, rgba(76,175,80,0.35), transparent 55%), var(--tt-bg-card); border-color:rgba(76,175,80,0.8);">
         <div class="tt-member-main">
@@ -1046,7 +1165,7 @@
     `;
   }
 
-  function renderTravelCard(m, routeText, now, isReturn, xid) {
+  function renderTravelCard(m, routeText, now, isReturn, xid, progressBgHtml) {
     const fastestDuration = getFastestDuration(m.lookupDest, m.flightType);
     const slowestDuration = getSlowestDuration(m.lookupDest, m.flightType);
     const fastestETA = m.travelStarted + fastestDuration * 60000;
@@ -1104,6 +1223,7 @@
           ${statusText}
         </div>
         <div class="tt-progress-shell">
+          ${progressBgHtml}
           <div class="tt-progress-labels">
             <span>${isReturn ? 'Arr' : 'Dep'}</span>
             <span>${isReturn ? 'Dep' : 'Arr'}</span>
@@ -1119,58 +1239,6 @@
     `;
   }
 
-  // ---------- PAGE BUTTON ----------
-
-  function updateButtonOnPage(fid) {
-    const btn = document.getElementById('travel-tracker-btn');
-    if (!btn) return;
-    const isWatched = !!state.watchedFactions[fid];
-    btn.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="6 5 28 28" style="vertical-align: middle; margin-right: 4px;">
-        <path d="M23,23.5a2,2,0,1,1,2,2A2,2,0,0,1,23,23.5Zm-10,0a2,2,0,1,1,2,2A2,2,0,0,1,13,23.5Zm1-7a2.15,2.15,0,0,0-2,2v5a3.23,3.23,0,0,0,3,3,3.23,3.23,0,0,0,3-3v-2h1v-1h2v1h1v2a3.23,3.23,0,0,0,3,3,3.23,3.23,0,0,0,3-3v-5a2.15,2.15,0,0,0-2-2v-2a1.08,1.08,0,0,0-1-1v-1h1v-2H22v2h1v1l-3,1.69L17,13.5v-1h1v-2H14v2h1v1a1.08,1.08,0,0,0-1,1Z" fill="white"></path>
-      </svg>${isWatched ? 'WATCHING' : 'WATCH'}
-    `;
-    btn.style.background = isWatched ? '#4CAF50' : '#2196F3';
-  }
-
-  function createWatchButton() {
-    const fid = getCurrentFactionIdFromUrl();
-    if (!fid) return null;
-    const isWatched = !!state.watchedFactions[fid];
-    const btn = document.createElement('button');
-    btn.id = 'travel-tracker-btn';
-    btn.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="6 5 28 28" style="vertical-align: middle; margin-right: 4px;">
-        <path d="M23,23.5a2,2,0,1,1,2,2A2,2,0,0,1,23,23.5Zm-10,0a2,2,0,1,1,2,2A2,2,0,0,1,13,23.5Zm1-7a2.15,2.15,0,0,0-2,2v5a3.23,3.23,0,0,0,3,3,3.23,3.23,0,0,0,3-3v-2h1v-1h2v1h1v2a3.23,3.23,0,0,0,3,3,3.23,3.23,0,0,0,3-3v-5a2.15,2.15,0,0,0-2-2v-2a1.08,1.08,0,0,0-1-1v-1h1v-2H22v2h1v1l-3,1.69L17,13.5v-1h1v-2H14v2h1v1a1.08,1.08,0,0,0-1,1Z" fill="white"></path>
-      </svg>${isWatched ? 'WATCHING' : 'WATCH'}
-    `;
-    btn.style.cssText = `
-      position: absolute; top: 4px; right: 4px; padding: 4px 10px; font-size: 12px; font-weight: bold;
-      border: none; border-radius: 999px; cursor: pointer; color: #fff; z-index: 10;
-      background: ${isWatched ? '#4CAF50' : '#2196F3'}; box-shadow: 0 0 4px rgba(0,0,0,0.5);
-      display: flex; align-items: center; gap: 4px;
-    `;
-    btn.addEventListener('click', () => {
-      if (!isWatched) addFactionToWatch(fid);
-      else {
-        state.selectedFactionId = fid;
-        if (!state.panelVisible) createPanel(); else updatePanelContent();
-      }
-    });
-    return btn;
-  }
-
-  function injectPageButton() {
-    if (!isFactionProfilePage()) return;
-    const oldBtn = document.getElementById('travel-tracker-btn');
-    if (oldBtn) oldBtn.remove();
-    const container = document.querySelector('.f-img-wrap.left');
-    if (!container) return;
-    if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
-    const btn = createWatchButton();
-    if (btn) container.appendChild(btn);
-  }
-
   // ---------- INIT ----------
 
   function init() {
@@ -1179,7 +1247,6 @@
     pollServer();
     setInterval(pollServer, POLL_INTERVAL_MS);
     injectFloatingIcon();
-    if (isFactionProfilePage()) setTimeout(injectPageButton, 500);
   }
 
   init();
