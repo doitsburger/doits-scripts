@@ -99,7 +99,7 @@ Full credit and respect to the original authors.
 Real‑time travel tracking for faction members. Fetches travel data directly from the Torn API and displays flight progress, ETA windows, and honour‑bar destination backgrounds in a sleek, interactive panel. Clickable member and faction links, filtering by outbound/return, and a subtle alert when a faction member is travelling to your same destination.
 
 **🔑 API Requirement**  
-You must register a standard Torn API key with **public access** (and faction permission). The script will prompt you for this key the first time you try to watch a faction.
+You must register a standard Torn API key with **public access**. The script will prompt you for this key the first time you try to watch a faction.
 
 **Install (Browser / Torn PDA):**  
 https://raw.githubusercontent.com/doitsburger/doits-scripts/refs/heads/main/flight-tracker/travel-tracker.js
