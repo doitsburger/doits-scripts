@@ -193,9 +193,9 @@ Expected output:
 
 ---
 
-## Making It Persistent (Background Mode)
+🟩 Making It Persistent (Background Mode)
 
-Start in background:
+Start in background
 
 ```bash
 cd ~/torn-tracker
@@ -203,112 +203,100 @@ termux-wake-lock
 nohup node server.js > tracker.log 2>&1 &
 ```
 
-Check if running:
+Check if running
 
 ```bash
 ps aux | grep node
 ```
 
-View logs:
+View logs
 
 ```bash
 tail -f ~/torn-tracker/tracker.log
 ```
 
-Stop the server:
+Stop the server (updated)
 
 ```bash
-killall node
+pkill -f "node server.js"
 ```
 
-Force stop if required:
+Force stop if required
 
 ```bash
 kill -9 $(ps aux | grep "server.js" | grep -v grep | awk '{print $2}')
 ```
 
----
+🚀 Auto‑Start on Boot
 
-## Auto‑Start on Boot
+Install Termux:Boot from F‑Droid.
 
-1. **Install Termux:Boot** from F-Droid.
-
-2. **Create Boot Script**
-
-   ```bash
-   mkdir -p ~/.termux/boot
-   nano ~/.termux/boot/start-tracker.sh
-   ```
-
-   Paste:
-
-   ```bash
-   #!/data/data/com.termux/files/usr/bin/bash
-   termux-wake-lock
-   cd ~/torn-tracker
-   nohup node server.js > tracker.log 2>&1 &
-   ```
-
-   Make executable:
-
-   ```bash
-   chmod +x ~/.termux/boot/start-tracker.sh
-   ```
-
-3. Finally, open **Termux:Boot** once.
-
----
-
-## Updating the Server
+Create Boot Script
 
 ```bash
-killall node
+mkdir -p ~/.termux/boot
+nano ~/.termux/boot/start-tracker.sh
+```
+
+Paste:
+
+```bash
+#!/data/data/com.termux/files/usr/bin/bash
+termux-wake-lock
+cd ~/torn-tracker
+nohup node server.js > tracker.log 2>&1 &
+```
+
+Make executable:
+
+```bash
+chmod +x ~/.termux/boot/start-tracker.sh
+```
+
+Open Termux:Boot once.
+
+🔄 Updating the Server (updated kill command)
+
+```bash
+pkill -f "node server.js"
 cd ~/torn-tracker
 cp state.json state.json.backup
 cp config.json config.json.backup
 nano server.js
 ```
 
-Paste the updated version and save.  
-Restart:
+Paste your updated version and save.
+
+Restart
 
 ```bash
 termux-wake-lock
 nohup node server.js > tracker.log 2>&1 &
 ```
 
----
+🛠️ Troubleshooting
 
-## Troubleshooting
+Problem Fix
+Local Server Offline Start the server again in Termux
+No notifications Test with termux-notification
+Failed to watch faction API key missing or server offline
+Server won't stop Use pkill -f "node server.js" or the kill‑9 command
+High battery usage Increase SCAN_INTERVAL_MS
+Termux keeps getting killed Disable battery optimisation
+Players stuck landing Latest server.js fixes this automatically
 
-| Problem | Fix |
-|---------|-----|
-| Local Server Offline | Start the server again in Termux |
-| No notifications | Test with `termux-notification` |
-| Failed to watch faction | API key missing or server offline |
-| Server won't stop | Use the `kill -9` command |
-| High battery usage | Increase `SCAN_INTERVAL_MS` |
-| Termux keeps getting killed | Disable battery optimisation |
-| Players stuck landing | Latest `server.js` fixes this automatically |
+⚡ Quick Command Reference (updated)
 
----
+Task Command
+Start server (foreground) cd ~/torn-tracker && node server.js
+Start server (background) nohup node server.js > tracker.log 2>&1 &
+Check if running ps aux \| grep node
+View logs tail -f ~/torn-tracker/tracker.log
+Stop server pkill -f "node server.js"
+Health check curl http://127.0.0.1:3000/api/health
+Reset data rm ~/torn-tracker/state.json
+Edit config nano ~/torn-tracker/config.json
 
-## Quick Command Reference
+🎉 Enjoy Never Missing an Enemy Flight Again
 
-| Task | Command |
-|------|---------|
-| Start server (foreground) | `cd ~/torn-tracker && node server.js` |
-| Start server (background) | `nohup node server.js > tracker.log 2>&1 &` |
-| Check if running | `ps aux | grep node` |
-| View logs | `tail -f ~/torn-tracker/tracker.log` |
-| Stop server | `killall node` |
-| Health check | `curl http://127.0.0.1:3000/api/health` |
-| Reset data | `rm ~/torn-tracker/state.json` |
-| Edit config | `nano ~/torn-tracker/config.json` |
-
----
-
-🎉 **Enjoy Never Missing an Enemy Flight Again!**  
 Your Torn Travel Tracker is now running 24/7, scanning for hostile travel activity and delivering native Android alerts directly to your device.
-
-✈️🔔
