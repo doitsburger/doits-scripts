@@ -71,8 +71,33 @@ Full credit and respect to the original authors.
 ---
 
 ### 🎯 Doitsburger’s FF Target Finder
-Quick target finder. Fetches random targets from FFScouter based on your Fair Fight (FF) range, inactivity, and faction filters.
 
+Quick target finder. Fetches random targets from FFScouter based on your Fair Fight (FF) range, inactivity, and faction filters. While abroad, uses a local cache of all players in your country – updated every 30 seconds.
+
+**Key Features**
+- **Abroad cache** – scrapes all players in your country, enriches FF/BS via FFScouter, excludes your faction mates.
+- **Mugginator mode** – only targets new arrivals (≤ 3 min) within your Fair Fight range, always attacking the weakest.
+- **Arrival tracker** – shows how long each player has been in the country; filter by arrival time.
+- **Clickable names** – click any name in the “Abroad Players” panel to open their full profile in a new tab.
+- **Activity & status filters** – Online/Idle/Offline, Only Okay (skip hospitalised).
+- **Normal FFScouter mode** – works as before when you’re at home.
+
+**How to Use**
+- **Tap** the floating 🎯 button → attack a valid target (all filters applied, Mugginator if enabled).
+- **Long‑press** the button → open **Settings** (Fair Fight, filters, Mugginator, etc.).
+- **Show Abroad Players** in Settings → view the cached list, filter by arrival, click names for full profiles.
+- Keyboard shortcuts: `F1` attack, `F2` settings, `F3` API key.
+
+**Requirements**
+- An API key registered with [ffscouter.com](https://ffscouter.com) (enter via Settings or use Torn PDA).
+- Your Torn API key is used automatically for faction member exclusion.
+
+**Recent Updates (v6.5)**
+- Mugginator now uses your own Fair Fight range and a 3‑min arrival window.
+- Cache polling reduced to 30 seconds.
+- Settings panel stays open after saving.
+- Faction member exclusion integrated.
+  
 **🔑 API Requirement (Important)**  
 Before using this script, you must:  
 - If you are already using the FF Scouter you can use the same API KEY  
