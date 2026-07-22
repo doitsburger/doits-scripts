@@ -87,16 +87,6 @@ Quick target finder. Fetches random targets from FFScouter based on your Fair Fi
 - **Long‑press** the button → open **Settings** (Fair Fight, filters, Mugginator, etc.).
 - **Show Abroad Players** in Settings → view the cached list, filter by arrival, click names for full profiles.
 - Keyboard shortcuts: `F1` attack, `F2` settings, `F3` API key.
-
-**Requirements**
-- An API key registered with [ffscouter.com](https://ffscouter.com) (enter via Settings or use Torn PDA).
-- Your Torn API key is used automatically for faction member exclusion.
-
-**Recent Updates (v6.5)**
-- Mugginator now uses your own Fair Fight range and a 3‑min arrival window.
-- Cache polling reduced to 30 seconds.
-- Settings panel stays open after saving.
-- Faction member exclusion integrated.
   
 **🔑 API Requirement (Important)**  
 Before using this script, you must:  
