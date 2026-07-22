@@ -818,7 +818,6 @@
             }
             saveConfig(newConfig);
             showToast('Settings saved!', 'success');
-            close();
         });
         const esc = e=>{ if(e.key==='Escape') { close(); document.removeEventListener('keydown', esc); } };
         document.addEventListener('keydown', esc);
