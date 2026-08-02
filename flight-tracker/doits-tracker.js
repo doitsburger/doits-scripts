@@ -20,7 +20,7 @@
     'use strict';
 
     // ==================== CONFIG ====================
-    const GIST_RAW_URL = 'https://gist.github.com/doitsburger/f6146b9fc97ed168fecd84a4ea3ea8d2/raw/travel-state.json';
+    const GIST_RAW_URL = 'https://gist.githubusercontent.com/doitsburger/f6146b9fc97ed168fecd84a4ea3ea8d2/raw/dfbd8aa88478fb169391c8e83920ebed431590f0/travel-state.json';
     const LOCAL_SERVER = 'http://127.0.0.1:3000';
 
     const POLL_INTERVAL_LOCAL = 1500;
