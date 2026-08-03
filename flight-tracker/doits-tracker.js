@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v17.1 – Mobile‑First
+// @name         1 Doits Flight Tracker v17.1.3 – Biz Window Visible + OUT/RET Pills + Bold White Elapsed
 // @namespace    https://github.com/your-repo
-// @version      17.1.0
-// @description  Travel tracker with local Termux server + GitHub Gist fallback + personal TBS colouring (mobile optimised)
+// @version      17.1.3
+// @description  Biz line always shown when toggled, OUT/RET pills, bold white elapsed time, mobile‑first
 // @author       Doitsburger + Grok
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -25,7 +25,7 @@
 
     const POLL_INTERVAL_LOCAL = 1500;
     const POLL_INTERVAL_GIST  = 12000;
-    const PANEL_UPDATE_INTERVAL = 2000; // reduced from 1s for mobile performance
+    const PANEL_UPDATE_INTERVAL = 2000;
     const DETECT_DELAY = 20000;
 
     const DEFAULT_DURATIONS = {
@@ -155,14 +155,8 @@
         return t ? t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
     }
 
-    function getFastestDuration(dest, type) {
-        const b = DEFAULT_DURATIONS[dest]?.[type];
-        return b ? b * 0.97 : 10;
-    }
-    function getSlowestDuration(dest, type) {
-        const b = DEFAULT_DURATIONS[dest]?.[type];
-        return b ? b * 1.03 : 10;
-    }
+    function getFastestDuration(dest, type) { const b = DEFAULT_DURATIONS[dest]?.[type]; return b ? b * 0.97 : 10; }
+    function getSlowestDuration(dest, type) { const b = DEFAULT_DURATIONS[dest]?.[type]; return b ? b * 1.03 : 10; }
 
     function formatTime(ms) {
         if (ms <= 0) return '0:00';
@@ -182,10 +176,7 @@
         return parts.join(' ');
     }
 
-    function formatWallClock(ts) {
-        return new Date(ts).toISOString().split('T')[1].slice(0, 8);
-    }
-
+    function formatWallClock(ts) { return new Date(ts).toISOString().split('T')[1].slice(0, 8); }
     function isFactionProfilePage() { return /\/factions\.php\?step=profile/i.test(window.location.href); }
     function getCurrentFactionIdFromUrl() { return new URLSearchParams(window.location.search).get('ID'); }
 
@@ -199,9 +190,7 @@
         return t.length > 0 && t.length < 100 ? t : null;
     }
 
-    function requestNotificationPermission() {
-        if (Notification.permission === 'default') Notification.requestPermission();
-    }
+    function requestNotificationPermission() { if (Notification.permission === 'default') Notification.requestPermission(); }
     function sendBrowserNotification(title, body) {
         if (Notification.permission === 'granted') new Notification(title, { body, icon: 'https://www.torn.com/favicon.ico' });
     }
@@ -210,10 +199,8 @@
     async function fetchMyOwnTBS() {
         const key = state.personalApiKey;
         if (!key) return;
-
         const myId = getMyTornUserId();
         if (!myId) return;
-
         return new Promise(resolve => {
             GM_xmlhttpRequest({
                 method: 'GET',
@@ -223,7 +210,6 @@
                         const data = JSON.parse(r.responseText);
                         if (Array.isArray(data) && data[0] && data[0].bs_estimate) {
                             myBattleStats = data[0].bs_estimate;
-                            console.log('[TBS] Personal from FFScouter:', formatBS(myBattleStats));
                             resolve();
                             return;
                         }
@@ -237,7 +223,6 @@
                                 if (j.strength && j.defense && j.speed && j.dexterity) {
                                     const bss = Math.sqrt(j.strength) + Math.sqrt(j.defense) + Math.sqrt(j.speed) + Math.sqrt(j.dexterity);
                                     myBattleStats = Math.round(bss * bss * 0.85);
-                                    console.log('[TBS] Approximate from Torn:', formatBS(myBattleStats));
                                 }
                             } catch (e) {}
                             resolve();
@@ -288,9 +273,7 @@
                         data.myTravelArrival = data.myTravelArrival || null;
                         data.factions = data.factions || {};
                         resolve(data);
-                    } catch (e) {
-                        reject(e);
-                    }
+                    } catch (e) { reject(e); }
                 },
                 onerror: reject
             });
@@ -302,14 +285,8 @@
             const data = await serverRequest('GET', '/api/state');
             usingLocal = true;
             return data;
-        } catch (e) {
-            usingLocal = false;
-        }
-        try {
-            return await fetchFromGist();
-        } catch (e) {
-            throw new Error('Both local and Gist failed');
-        }
+        } catch (e) { usingLocal = false; }
+        try { return await fetchFromGist(); } catch (e) { throw new Error('Both local and Gist failed'); }
     }
 
     function detectNewFlights(currentFactions) {
@@ -328,9 +305,7 @@
                                 if (parseInt(k.split(':')[3]) < cut) delete state.notifiedFlights[k];
                             }
                         }
-                        if (c.sameDestination) {
-                            sendBrowserNotification('Enemy inbound!', c.playerName + ' flying to ' + c.destination);
-                        }
+                        if (c.sameDestination) sendBrowserNotification('Enemy inbound!', c.playerName + ' flying to ' + c.destination);
                     }
                 }
             }
@@ -340,7 +315,6 @@
     async function pollServer() {
         try {
             const data = await fetchState();
-
             state.apiKeySet = data.apiKeySet;
             state.myUserID = data.myUserID;
             state.myDestination = data.myDestination;
@@ -366,14 +340,9 @@
                 fetchMyOwnTBS();
             } else {
                 const myId = getMyTornUserId();
-                if (myId) {
-                    for (const fid in state.watchedFactions) {
-                        const m = state.watchedFactions[fid].members[myId];
-                        if (m && m.tbs != null) {
-                            myBattleStats = m.tbs;
-                            break;
-                        }
-                    }
+                if (myId) for (const fid in state.watchedFactions) {
+                    const m = state.watchedFactions[fid].members[myId];
+                    if (m && m.tbs != null) { myBattleStats = m.tbs; break; }
                 }
             }
 
@@ -439,23 +408,14 @@
     }
 
     async function addFactionToWatch(fid) {
-        if (!usingLocal) {
-            alert('Watching factions only works when connected to the local Termux server.');
-            return;
-        }
-        if (!state.apiKeySet) {
-            if (!promptForApiKey()) return;
-            await new Promise(r => setTimeout(r, 1500));
-        }
+        if (!usingLocal) { alert('Watching factions only works when connected to the local Termux server.'); return; }
+        if (!state.apiKeySet) { if (!promptForApiKey()) return; await new Promise(r => setTimeout(r, 1500)); }
         const name = scrapeFactionNameFromPage() || ('Faction ' + fid);
         try {
             await serverRequest('POST', '/api/watch', { fid, name });
             state.selectedFactionId = fid;
-            if (!state.panelVisible) createPanel();
-            else updatePanelContent();
-        } catch (e) {
-            alert('Failed: ' + e.message);
-        }
+            if (!state.panelVisible) createPanel(); else updatePanelContent();
+        } catch (e) { alert('Failed: ' + e.message); }
     }
 
     function removeWatchedFaction(fid) {
@@ -496,27 +456,14 @@
         const icon = document.createElement('div');
         icon.id = 'travel-float-icon';
         Object.assign(icon.style, {
-            position: 'fixed',
-            bottom: '16px',
-            right: '16px',
-            width: '48px',
-            height: '48px',
-            borderRadius: '50%',
-            background: 'radial-gradient(circle at 30% 0, rgba(255,255,255,0.2), transparent 55%), rgba(18,18,18,0.92)',
-            border: '1px solid rgba(255,255,255,0.15)',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            zIndex: '100000',
-            color: '#fff',
-            fontSize: '24px',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
+            position: 'fixed', bottom: '16px', right: '16px', width: '48px', height: '48px',
+            borderRadius: '50%', background: 'radial-gradient(circle at 30% 0, rgba(255,255,255,0.2), transparent 55%), rgba(18,18,18,0.92)',
+            border: '1px solid rgba(255,255,255,0.15)', boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+            zIndex: '100000', color: '#fff', fontSize: '24px',
+            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
             transition: 'transform 0.15s ease-out, box-shadow 0.15s ease-out',
-            userSelect: 'none',
-            WebkitTapHighlightColor: 'transparent'
+            userSelect: 'none', WebkitTapHighlightColor: 'transparent'
         });
         icon.innerHTML = '<span style="font-size:20px;line-height:1;">✈️</span>';
         const dot = document.createElement('div');
@@ -535,7 +482,7 @@
         document.body.appendChild(icon);
     }
 
-    // ==================== STYLES (mobile-first) ====================
+    // ==================== STYLES (mobile‑first, Biz toggle matches v16.4) ====================
     function injectGlobalStyles() {
         if (document.getElementById('travel-tracker-global-styles')) return;
         const style = document.createElement('style');
@@ -629,6 +576,20 @@
       .tt-danger-item:last-child { border-bottom: none; }
       .tt-danger-item .bs { font-size: 11px; color: var(--tt-text-soft); margin-left: 6px; }
       .tt-danger-item .eta { font-size: 12px; color: var(--tt-text-soft); }
+
+      /* Biz toggle – exactly like v16.4 */
+      .tt-business-toggle {
+        display: inline-flex; align-items: center; gap: 3px; font-size: 9px; color: var(--tt-text-soft); cursor: pointer; user-select: none;
+      }
+      .tt-business-toggle input[type="checkbox"] { margin: 0; width: 12px; height: 12px; accent-color: #FFD700; cursor: pointer; }
+
+      /* Make biz window line clearly visible */
+      .tt-biz-window {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #00BCD4;
+        font-weight: 500;
+      }
     `;
         document.head.appendChild(style);
     }
@@ -668,10 +629,7 @@
         const panel = document.getElementById('travel-panel');
         if (!panel) return;
         panel.style.transform = 'translateY(100%)';
-        panel.addEventListener('transitionend', function h() {
-            panel.removeEventListener('transitionend', h);
-            panel.remove();
-        });
+        panel.addEventListener('transitionend', function h() { panel.removeEventListener('transitionend', h); panel.remove(); });
         const overlay = document.getElementById('travel-panel-overlay');
         if (overlay) overlay.remove();
         state.panelVisible = false;
@@ -692,7 +650,6 @@
         const now = Date.now();
         const ownFaction = state.watchedFactions[fid];
         if (!ownFaction) return '<div>No data</div>';
-
         const enemies = [];
         for (const efid of state.warFactions) {
             if (efid === fid) continue;
@@ -705,7 +662,6 @@
                 }
             }
         }
-
         const zones = {};
         for (const xid in ownFaction.members) {
             const m = ownFaction.members[xid];
@@ -717,22 +673,17 @@
         for (const e of enemies) {
             if (zones[e.destination]) zones[e.destination].foes.push(e);
         }
-
         const dangerKeys = Object.keys(zones).filter(d => zones[d].foes.length > 0);
         if (dangerKeys.length === 0) {
             return '<div style="padding:16px;border-radius:var(--tt-radius-md);border:1px dashed rgba(255,255,255,0.15);text-align:center;font-size:13px;color:var(--tt-text-soft);">No immediate threats detected.</div>';
         }
-
         dangerKeys.sort();
         let html = '';
         for (const dest of dangerKeys) {
             const zone = zones[dest];
             const flagEmoji = FLAG_EMOJI[dest] || '';
             html += `<div class="tt-danger-group" data-dest="${escapeHtml(dest)}">
-                <div class="tt-danger-header">
-                    <span>⚠️ AT RISK ${flagEmoji} ${escapeHtml(dest)}</span>
-                    <span class="collapse-icon">▼</span>
-                </div>
+                <div class="tt-danger-header"><span>⚠️ AT RISK ${flagEmoji} ${escapeHtml(dest)}</span><span class="collapse-icon">▼</span></div>
                 <div class="tt-danger-body">
                     <div class="tt-danger-subtitle">👥 Your Faction (${zone.friendlies.length})</div>`;
             zone.friendlies.sort((a, b) => {
@@ -747,10 +698,7 @@
                 const fastestETA = m.travelStarted + fastestDur * 60000 - DETECT_DELAY;
                 const rem = Math.max(0, fastestETA - now);
                 const etaDisplay = rem <= 0 ? 'Landing' : formatTime(rem);
-                html += `<div class="tt-danger-item">
-                    <span><a href="/profiles.php?XID=${m.xid}" target="_blank" style="color:var(--tt-text-main);text-decoration:none;">${escapeHtml(m.playerName)}</a> <span class="bs">⚔ ${bsStr}</span></span>
-                    <span class="eta">${etaDisplay}</span>
-                </div>`;
+                html += `<div class="tt-danger-item"><span><a href="/profiles.php?XID=${m.xid}" target="_blank" style="color:var(--tt-text-main);text-decoration:none;">${escapeHtml(m.playerName)}</a> <span class="bs">⚔ ${bsStr}</span></span><span class="eta">${etaDisplay}</span></div>`;
             }
             html += `<div class="tt-danger-subtitle">☠️ Enemy Inbound (${zone.foes.length})</div>`;
             zone.foes.sort((a, b) => {
@@ -765,10 +713,7 @@
                 const fastestETA = e.travelStarted + fastestDur * 60000 - DETECT_DELAY;
                 const rem = Math.max(0, fastestETA - now);
                 const etaDisplay = rem <= 0 ? 'Landing' : formatTime(rem);
-                html += `<div class="tt-danger-item">
-                    <span><a href="/profiles.php?XID=${e.xid}" target="_blank" style="color:var(--tt-text-main);text-decoration:none;">${escapeHtml(e.playerName)}</a> <span class="bs">⚔ ${bsStr}</span></span>
-                    <span class="eta">${etaDisplay}</span>
-                </div>`;
+                html += `<div class="tt-danger-item"><span><a href="/profiles.php?XID=${e.xid}" target="_blank" style="color:var(--tt-text-main);text-decoration:none;">${escapeHtml(e.playerName)}</a> <span class="bs">⚔ ${bsStr}</span></span><span class="eta">${etaDisplay}</span></div>`;
             }
             html += `</div></div>`;
         }
@@ -845,11 +790,12 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">■</span> Out <span style="color:var(--tt-purple);margin-left:6px;">■</span> Return <span style="color:var(--tt-warning);margin-left:6px;">■</span> Landing</span></div><div><span class="tt-kbd">v17.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">■</span> Out <span style="color:var(--tt-purple);margin-left:6px;">■</span> Return <span style="color:var(--tt-warning);margin-left:6px;">■</span> Landing</span></div><div><span class="tt-kbd">v17.1.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         // Event listeners
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
 
+        // Copy all
         const copyAllBtn = document.getElementById('tt-copy-all-btn');
         if (copyAllBtn) {
             copyAllBtn.addEventListener('click', () => {
@@ -877,6 +823,10 @@
                 text += `Out: ${outCount}  Return: ${retCount}  Total flying: ${flying.length}\n\n`;
                 flying.forEach((m, idx) => {
                     const isYou = (m.xid === String(state.myUserID));
+                    const isCommercial = (m.flightType === 'Commercial');
+                    const bizKey = `${m.xid}:${m.travelStarted}`;
+                    const isBusiness = state.businessFlights[bizKey] || false;
+
                     const fastestDur = getFastestDuration(m.lookupDest, m.flightType);
                     let fastestETA;
                     if (isYou && state.myTravelArrival) {
@@ -890,12 +840,29 @@
                     const bs = m.tbs || m.bs_estimate || null;
                     const bsFormatted = bs ? formatBS(bs) : null;
                     const flightTypeLabel = m.flightType || 'Flight';
+
                     text += `${idx+1}. ✈️ ${m.playerName} → ${FLAG_EMOJI[m.destination] || ''} ${m.destination}\n`;
                     if (bsFormatted) text += `   BS: ${bsFormatted} | Flight: ${flightTypeLabel}\n`;
                     else text += `   Flight: ${flightTypeLabel}\n`;
                     text += `   Flying for ${formatElapsed(elapsed)}\n`;
                     if (isLanding) text += `   Earliest: Landing\n   ETA: Landing\n`;
-                    else text += `   Earliest: ${formatTime(fastestRem)}\n   ETA: ${formatWallClock(fastestETA)}\n`;
+                    else {
+                        text += `   Earliest: ${formatTime(fastestRem)}\n   ETA: ${formatWallClock(fastestETA)}\n`;
+                    }
+
+                    if (isBusiness && isCommercial) {
+                        const businessBase = BUSINESS_DURATIONS[m.lookupDest] || (DEFAULT_DURATIONS[m.lookupDest]?.[m.flightType] * 0.30);
+                        const bizFastestDur = businessBase * 0.97;
+                        let bizFastestETA;
+                        if (isYou && state.myTravelArrival) {
+                            bizFastestETA = fastestETA;
+                        } else {
+                            bizFastestETA = m.travelStarted + bizFastestDur * 60000 - DETECT_DELAY;
+                        }
+                        const bizFastestRem = Math.max(0, bizFastestETA - now);
+                        if (isLanding) text += `   Biz earliest: Landing\n   Biz ETA: Landing\n`;
+                        else text += `   Biz earliest: ${formatTime(bizFastestRem)}\n   Biz ETA: ${formatWallClock(bizFastestETA)}\n`;
+                    }
                     text += '\n';
                 });
                 navigator.clipboard.writeText(text).then(() => {
@@ -1074,11 +1041,11 @@
       <div class="tt-row" style="margin-bottom:10px;flex-wrap:wrap;gap:6px;">
         <div class="tt-chip tt-chip-accent">
           <span style="width:8px;height:8px;border-radius:50%;background:var(--tt-accent);display:inline-block;"></span>
-          Outbound
+          OUT
         </div>
         <div class="tt-chip tt-chip-purple">
           <span style="width:8px;height:8px;border-radius:50%;background:var(--tt-purple);display:inline-block;"></span>
-          Return
+          RET
         </div>
         ${!isOwn ? `<button id="tt-stop-watch-faction" data-fid="${fid}" style="border-radius:999px;border:none;padding:6px 14px;font-size:12px;font-weight:600;background:rgba(239,83,80,0.2);color:#FFCDD2;cursor:pointer;touch-action:manipulation;">Stop</button>` : ''}
       </div>`;
@@ -1091,7 +1058,6 @@
                 else html += renderTravelCard(m, now);
             }
         }
-
         return html + '</div>';
     }
 
@@ -1112,32 +1078,54 @@
 
     function renderTravelCard(m, now) {
         const isYou = (m.xid === String(state.myUserID));
+        const isCommercial = (m.flightType === 'Commercial');
+
+        const bizKey = `${m.xid}:${m.travelStarted}`;
+        const isBusiness = state.businessFlights[bizKey] || false;
+
         const baseDur = DEFAULT_DURATIONS[m.lookupDest]?.[m.flightType] || 120;
+        const businessBase = isCommercial ? (BUSINESS_DURATIONS[m.lookupDest] || baseDur * 0.30) : baseDur;
+
         const fastestDur = getFastestDuration(m.lookupDest, m.flightType);
         const slowestDur = getSlowestDuration(m.lookupDest, m.flightType);
+        const bizFastestDur = businessBase * 0.97;
+        const bizSlowestDur = businessBase * 1.03;
 
-        let fastestETA, slowestETA;
+        let fastestETA, slowestETA, bizFastestETA, bizSlowestETA;
         if (isYou && state.myTravelArrival) {
             const exactRem = Math.max(0, state.myTravelArrival - now);
             fastestETA = now + exactRem;
             slowestETA = now + exactRem;
+            bizFastestETA = fastestETA;
+            bizSlowestETA = slowestETA;
         } else {
             fastestETA = m.travelStarted + fastestDur * 60000 - DETECT_DELAY;
             slowestETA = m.travelStarted + slowestDur * 60000;
+            bizFastestETA = m.travelStarted + bizFastestDur * 60000 - DETECT_DELAY;
+            bizSlowestETA = m.travelStarted + bizSlowestDur * 60000;
         }
 
         const fastestRem = Math.max(0, fastestETA - now);
         const slowestRem = Math.max(0, slowestETA - now);
+        const bizFastestRem = Math.max(0, bizFastestETA - now);
+        const bizSlowestRem = Math.max(0, bizSlowestETA - now);
+
         const total = baseDur * 60000;
         const elapsed = now - m.travelStarted;
         const pct = total > 0 ? Math.min(100, (elapsed / total) * 100) : 100;
         const isLanding = fastestRem <= 0;
         const isReturn = m.destination === 'Torn';
 
+        // Biz progress
+        const bizTotal = businessBase * 60000;
+        const bizPct = bizTotal > 0 ? Math.min(100, (elapsed / bizTotal) * 100) : 0;
+        const bizPlaneLeft = isReturn ? (100 - bizPct) : bizPct;
+        const bizFillStyle = isReturn ? `right:0;left:auto;width:${bizPct}%;` : `left:0;right:auto;width:${bizPct}%;`;
+
         const barColor = isLanding ? '#FFB300' : isReturn ? '#9C27B0' : (pct > 90 ? '#FFB300' : '#2196F3');
         const barWidth = isLanding ? 100 : pct;
         const chipClass = isLanding ? 'tt-chip-warning' : isReturn ? 'tt-chip-purple' : 'tt-chip-accent';
-        const chipLabel = isReturn ? 'Return' : 'Outbound';
+        const chipLabel = isReturn ? 'RET' : 'OUT';   // short labels
         const chipTime = formatTime(fastestRem);
         const bsPill = renderBSPill(m);
         const route = isReturn ? '← ' + m.origin : m.origin + ' → ' + m.destination;
@@ -1155,6 +1143,7 @@
         }
         const fillStyle = isReturn ? `right:0;left:auto;width:${barWidth}%;background:${barColor};` : `left:0;right:auto;width:${barWidth}%;background:${barColor};`;
 
+        // Clip text (per-card) – unchanged except uses short chipLabel
         const flagEmoji = FLAG_EMOJI[m.destination] || '';
         let clipLines = [];
         clipLines.push(`✈️ ${m.playerName} → ${flagEmoji} ${m.destination}`);
@@ -1169,7 +1158,46 @@
             clipLines.push(`Earliest: ${formatTime(fastestRem)}`);
             clipLines.push(`ETA: ${formatWallClock(fastestETA)}`);
         }
+        if (isBusiness && isCommercial) {
+            if (isLanding) {
+                clipLines.push(`Biz earliest: Landing`);
+                clipLines.push(`Biz ETA: Landing`);
+            } else {
+                clipLines.push(`Biz earliest: ${formatTime(bizFastestRem)}`);
+                clipLines.push(`Biz ETA: ${formatWallClock(bizFastestETA)}`);
+            }
+        }
         const clipText = clipLines.join('\n');
+
+        // Ghost business plane/bar
+        let ghostHtml = '';
+        if (isBusiness && isCommercial) {
+            const ghostPlaneTransform = isReturn ? 'translateX(-50%) translateY(-50%) scaleX(-1) rotate(45deg)' : 'translateX(-50%) translateY(-50%) rotate(45deg)';
+            ghostHtml = `
+        <div class="tt-progress-ghost-fill" style="${bizFillStyle}"></div>
+        <div class="tt-progress-ghost-plane" style="left:${bizPlaneLeft}%; transform:${ghostPlaneTransform};">✈️</div>
+      `;
+        }
+
+        // Biz arrival window line
+        let bizWindowHtml = '';
+        if (isBusiness && isCommercial) {
+            if (isLanding) {
+                bizWindowHtml = `<div class="tt-biz-window">Business: landed</div>`;
+            } else {
+                bizWindowHtml = `<div class="tt-biz-window">Business: ${formatTime(bizFastestRem)}–${formatTime(bizSlowestRem)}</div>`;
+            }
+        }
+
+        let bizToggleHtml = '';
+        if (isCommercial) {
+            bizToggleHtml = `
+        <label class="tt-business-toggle" style="margin-left:8px;">
+          <input type="checkbox" ${isBusiness ? 'checked' : ''} data-bizkey="${bizKey}">
+          Biz
+        </label>
+      `;
+        }
 
         return `<div class="${cardClasses.join(' ')}" data-clip-text="${escapeHtml(clipText)}">
       <div class="tt-member-main">
@@ -1183,18 +1211,21 @@
         <div class="tt-row-gap">
           ${bsPill}
           <span style="font-size:12px;color:var(--tt-text-soft);">${m.flightType}</span>
+          ${bizToggleHtml}
         </div>
       </div>
       <div style="margin-top:4px;font-size:12px;color:${isLanding ? 'var(--tt-warning)' : 'var(--tt-text-soft)'};text-align:left;">
-        <span>Elapsed: ${formatElapsed(elapsed)}</span>
+        <span>Elapsed: <span style="font-weight:700;color:#fff;">${formatElapsed(elapsed)}</span></span>
         <span style="margin-left:8px;">Window: <span style="font-weight:700;color:#FFD700;">${isLanding ? 'Landing' : formatTime(fastestRem)}</span>–${formatTime(slowestRem)}</span>
       </div>
+      ${bizWindowHtml}
       <div class="tt-progress-shell-new">
         <div class="tt-progress-flags-row">
           <div class="tt-circular-flag"><img src="/images/v2/travel_agency/flags/fl_torn.svg" alt="Torn"></div>
           <div class="tt-progress-track-new">
             <div class="tt-progress-fill-new" style="${fillStyle}"></div>
             <div class="tt-progress-plane-new" style="left:${planeLeft}%; transform:${planeTransform};">✈️</div>
+            ${ghostHtml}
           </div>
           <div class="tt-circular-flag"><img src="${abroadFlagUrl}" alt="Abroad"></div>
         </div>
@@ -1228,6 +1259,17 @@
                 detectWarFactionsFromPage();
             }
         }).observe(document, { subtree: true, childList: true });
+
+        // Biz toggle listener
+        document.addEventListener('change', function (e) {
+            if (e.target.matches('.tt-business-toggle input[type="checkbox"]')) {
+                const key = e.target.dataset.bizkey;
+                if (key) {
+                    state.businessFlights[key] = e.target.checked;
+                    updatePanelContent();
+                }
+            }
+        });
     }
 
     init();
