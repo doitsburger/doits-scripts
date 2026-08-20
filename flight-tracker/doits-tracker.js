@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v17.1.3
+// @name         1 Doits Flight Tracker v17.1.3 – Biz Window Visible + OUT/RET Pills + Bold White Elapsed
 // @namespace    https://github.com/your-repo
 // @version      17.1.3
 // @description  Biz line always shown when toggled, OUT/RET pills, bold white elapsed time, mobile-first
@@ -129,6 +129,8 @@
         lastPollTime: 0,
         serverOnline: false,
         activeTab: 'all',
+        abroadView: 'all',
+        abroadCollapsedSections: new Set(),
         previousMembers: {},
         notifiedFlights: loadNotifiedFlights(),
         notifiedLandings: loadNotifiedLandings(),
@@ -447,6 +449,25 @@
         );
 
         if (wantsPersonalFeatures) promptForPersonalKey();
+    }
+
+    function detectMyFactionFromWatchedFactions() {
+        const myId = String(state.myUserID || getMyTornUserId() || '');
+
+        if (!myId) return { id: null, name: null };
+
+        for (const fid in state.watchedFactions) {
+            const faction = state.watchedFactions[fid];
+
+            if (faction?.members && faction.members[myId]) {
+                return {
+                    id: String(fid),
+                    name: faction.name || `Faction ${fid}`
+            };
+            }
+        }
+
+        return { id: null, name: null };
     }
 
     // ==================== PERSONAL TRAVEL ====================
@@ -807,6 +828,19 @@
                 }
             }
 
+            const storedFaction = getMyFactionDetails();
+            const detectedFaction = detectMyFactionFromWatchedFactions();
+
+            state.myFactionID =
+                detectedFaction.id ||
+                storedFaction.id ||
+                state.myFactionID;
+
+            state.myFactionName =
+                detectedFaction.name ||
+                storedFaction.name ||
+                state.myFactionName;
+
             if (!usingLocal) {
                 if (state.personalApiKey && !myBattleStats) {
                     fetchMyOwnTBS();
@@ -1146,28 +1180,269 @@
       .tt-business-toggle input[type="checkbox"] { margin:0; width:12px; height:12px; accent-color:#FFD700; cursor:pointer; }
       .tt-biz-window { margin-top:4px; font-size:11px; color:#00BCD4; font-weight:500; }
 
-      .tt-abroad-country { background:var(--tt-bg-card); border:1px solid var(--tt-border-subtle); border-radius:var(--tt-radius-md); margin-bottom:10px; overflow:hidden; box-shadow:var(--tt-shadow-soft); cursor:pointer; touch-action:manipulation; transition:border-color var(--tt-transition-fast),box-shadow var(--tt-transition-fast); }
-      .tt-abroad-country:active { opacity:0.92; }
-      .tt-abroad-country--risk { border-color:rgba(239,83,80,0.9); box-shadow:0 0 0 1px rgba(239,83,80,0.35),var(--tt-shadow-soft); background:radial-gradient(circle at 0 0,rgba(239,83,80,0.18),transparent 48%),var(--tt-bg-card); }
-      .tt-abroad-country-header { padding:12px 14px; display:flex; align-items:center; justify-content:space-between; gap:8px; border-bottom:1px solid var(--tt-border-subtle); background:rgba(255,255,255,0.025); }
-      .tt-abroad-country--risk .tt-abroad-country-header { background:rgba(239,83,80,0.15); }
-      .tt-abroad-country-name { font-size:15px; font-weight:800; color:var(--tt-text-main); }
-      .tt-abroad-summary { font-size:11px; color:var(--tt-text-soft); text-align:right; }
-      .tt-abroad-risk-banner { margin:10px 12px 0; padding:8px 10px; border-radius:8px; background:rgba(239,83,80,0.18); border:1px solid rgba(239,83,80,0.6); color:#FFCDD2; font-size:12px; font-weight:700; }
-      .tt-abroad-side { padding:10px 12px; }
-      .tt-abroad-side + .tt-abroad-side { border-top:1px solid rgba(255,255,255,0.07); }
-      .tt-abroad-side-title { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:7px; }
-      .tt-abroad-side-title--friendly { color:#C8E6C9; }
-      .tt-abroad-side-title--enemy { color:#FFCDD2; }
-      .tt-abroad-subtitle { margin:8px 0 4px; font-size:10px; font-weight:800; color:var(--tt-text-soft); text-transform:uppercase; letter-spacing:0.05em; }
-      .tt-abroad-person { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
-      .tt-abroad-person:last-child { border-bottom:none; }
-      .tt-abroad-person-left { min-width:0; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-      .tt-abroad-name { font-size:13px; font-weight:600; color:var(--tt-text-main); text-decoration:none; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .tt-abroad-meta { font-size:11px; color:var(--tt-text-soft); white-space:nowrap; }
-      .tt-at-risk-indicator { display:inline-flex; align-items:center; justify-content:center; padding:2px 6px; border-radius:999px; background:rgba(239,83,80,0.16); border:1px solid rgba(239,83,80,0.55); color:#FFCDD2; font-size:10px; font-weight:800; }
-      .tt-abroad-empty { padding:16px; border-radius:var(--tt-radius-md); border:1px dashed rgba(255,255,255,0.15); text-align:center; font-size:13px; color:var(--tt-text-soft); }
-    `;
+     .tt-abroad-country {
+    background: var(--tt-bg-card);
+    border: 1px solid var(--tt-border-subtle);
+    border-radius: 14px;
+    margin-bottom: 14px;
+    overflow: hidden;
+    box-shadow: var(--tt-shadow-soft);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.tt-abroad-country--risk {
+    border-color: rgba(239,83,80,0.9);
+    box-shadow: 0 0 0 1px rgba(239,83,80,0.35), var(--tt-shadow-soft);
+    background:
+        radial-gradient(circle at 0 0, rgba(239,83,80,0.18), transparent 48%),
+        var(--tt-bg-card);
+}
+
+.tt-abroad-country-header {
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid var(--tt-border-subtle);
+    background: rgba(255,255,255,0.035);
+}
+
+.tt-abroad-country--risk .tt-abroad-country-header {
+    background: rgba(239,83,80,0.16);
+}
+
+.tt-abroad-country-name {
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--tt-text-main);
+    line-height: 1.2;
+}
+
+.tt-abroad-summary {
+    font-size: 11px;
+    color: var(--tt-text-soft);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.tt-abroad-risk-banner {
+    margin: 10px 12px 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(239,83,80,0.18);
+    border: 1px solid rgba(239,83,80,0.6);
+    color: #FFCDD2;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.tt-abroad-side {
+    padding: 10px 12px 12px;
+}
+
+.tt-abroad-side + .tt-abroad-side {
+    border-top: 1px solid rgba(255,255,255,0.07);
+}
+
+.tt-abroad-side-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+}
+
+.tt-abroad-side-title--friendly {
+    color: #C8E6C9;
+}
+
+.tt-abroad-side-title--enemy {
+    color: #FFCDD2;
+}
+
+.tt-abroad-subtitle {
+    margin: 8px 0 5px;
+    font-size: 10px;
+    font-weight: 800;
+    color: var(--tt-text-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.tt-abroad-person {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.tt-abroad-person:last-child {
+    border-bottom: none;
+}
+
+.tt-abroad-person-left {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.tt-abroad-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--tt-text-main);
+    text-decoration: none;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tt-abroad-meta {
+    font-size: 10px;
+    color: var(--tt-text-soft);
+    white-space: nowrap;
+    text-align: right;
+}
+
+.tt-at-risk-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: rgba(239,83,80,0.16);
+    border: 1px solid rgba(239,83,80,0.55);
+    color: #FFCDD2;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+.tt-abroad-empty {
+    padding: 16px;
+    border-radius: var(--tt-radius-md);
+    border: 1px dashed rgba(255,255,255,0.15);
+    text-align: center;
+    font-size: 13px;
+    color: var(--tt-text-soft);
+}
+
+@media (max-width: 600px) {
+    .tt-abroad-country {
+        border-radius: 12px;
+        margin-bottom: 12px;
+    }
+
+    .tt-abroad-country-header {
+        padding: 10px 12px;
+    }
+
+    .tt-abroad-country-name {
+        font-size: 14px;
+    }
+
+    .tt-abroad-summary {
+        font-size: 10px;
+    }
+
+    .tt-abroad-side {
+        padding: 9px 10px 10px;
+    }
+
+    .tt-abroad-person {
+        grid-template-columns: 1fr;
+        gap: 3px;
+        padding: 7px 0;
+    }
+
+    .tt-abroad-meta {
+        text-align: left;
+        padding-left: 0;
+    }
+
+    .tt-abroad-name {
+        font-size: 12px;
+    }
+
+    .tt-abroad-side-title {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    font-size:12px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    margin-bottom:7px;
+    cursor:pointer;
+    user-select:none;
+    touch-action:manipulation;
+}
+
+.tt-abroad-side-title-right {
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+
+.tt-abroad-collapse-icon {
+    font-size:11px;
+    color:var(--tt-text-soft);
+    transition:transform 0.15s ease-out;
+}
+
+.tt-abroad-side.collapsed .tt-abroad-side-body {
+    display:none;
+}
+
+.tt-abroad-side.collapsed .tt-abroad-collapse-icon {
+    transform:rotate(-90deg);
+}
+
+.tt-abroad-filter-row {
+    display:flex;
+    gap:4px;
+    padding:3px;
+    margin-bottom:10px;
+    background:rgba(255,255,255,0.04);
+    border-radius:999px;
+    border:1px solid rgba(255,255,255,0.06);
+}
+
+.tt-abroad-filter {
+    flex:1;
+    border:none;
+    border-radius:999px;
+    padding:7px 8px;
+    font-size:11px;
+    font-weight:700;
+    background:transparent;
+    color:var(--tt-text-soft);
+    cursor:pointer;
+    touch-action:manipulation;
+}
+
+.tt-abroad-filter.active {
+    background:rgba(255,255,255,0.1);
+    color:var(--tt-text-main);
+}
+
+.tt-abroad-filter.danger.active {
+    background:rgba(239,83,80,0.25);
+    color:#FFCDD2;
+}
+`;
 
         document.head.appendChild(style);
     }
@@ -1392,6 +1667,12 @@
         const { friendlies, enemies, fullRisk } = risk;
         const flag = FLAG_EMOJI[country] || '🌍';
 
+        const friendlyKey = `${country}-friendly`;
+        const enemyKey = `${country}-enemy`;
+
+        const friendliesCollapsed = state.abroadCollapsedSections.has(friendlyKey);
+        const enemiesCollapsed = state.abroadCollapsedSections.has(enemyKey);
+
         let text = `${flag} ${country}\n`;
         text += `Friendlies: ${friendlies.length} • Enemies: ${enemies.length}\n`;
 
@@ -1399,83 +1680,87 @@
             text += `⚠ AT RISK — an enemy in or inbound to ${country} is stronger than every known friendly member here.\n`;
         }
 
-        text += '\n👥 FRIENDLIES\n';
+        if (!friendliesCollapsed) {
+            text += '\n👥 FRIENDLIES\n';
 
-        if (zone.friendlyPresent.length === 0 && zone.friendlyInbound.length === 0) {
-            text += 'None\n';
-        }
+            if (zone.friendlyPresent.length === 0 && zone.friendlyInbound.length === 0) {
+                text += 'None\n';
+            }
 
-        if (zone.friendlyPresent.length > 0) {
-            text += `Present (${zone.friendlyPresent.length}):\n`;
+            if (zone.friendlyPresent.length > 0) {
+                text += `Present (${zone.friendlyPresent.length}):\n`;
 
-            for (const member of zone.friendlyPresent) {
-                const bs = getMemberBS(member);
-                const atRisk = isFriendlyAtRisk(member, fullRisk, enemies);
+                for (const member of zone.friendlyPresent) {
+                    const bs = getMemberBS(member);
+                    const atRisk = isFriendlyAtRisk(member, fullRisk, enemies);
 
-                text += `• ${member.playerName}`;
+                    text += `• ${member.playerName}`;
 
-                if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
-                if (atRisk) text += ' • ⚠ AT RISK';
+                    if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
+                    if (atRisk) text += ' • ⚠ AT RISK';
 
-                text += '\n';
+                    text += '\n';
+                }
+            }
+
+            if (zone.friendlyInbound.length > 0) {
+                text += `Inbound (${zone.friendlyInbound.length}):\n`;
+
+                for (const member of zone.friendlyInbound) {
+                    const bs = getMemberBS(member);
+                    const arrival = getMemberArrivalWindow(member);
+                    const atRisk = isFriendlyAtRisk(member, fullRisk, enemies);
+
+                    text += `• ${member.playerName}`;
+
+                    if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
+                    if (member.flightType) text += ` • ${member.flightType}`;
+                    if (arrival) text += ` • ETA ${arrival.earliestText}–${arrival.latestText}`;
+                    if (atRisk) text += ' • ⚠ AT RISK';
+
+                    text += '\n';
+                }
             }
         }
 
-        if (zone.friendlyInbound.length > 0) {
-            text += `Inbound (${zone.friendlyInbound.length}):\n`;
+        if (!enemiesCollapsed) {
+            text += '\n☠️ ENEMIES\n';
 
-            for (const member of zone.friendlyInbound) {
-                const bs = getMemberBS(member);
-                const arrival = getMemberArrivalWindow(member);
-                const atRisk = isFriendlyAtRisk(member, fullRisk, enemies);
-
-                text += `• ${member.playerName}`;
-
-                if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
-                if (member.flightType) text += ` • ${member.flightType}`;
-                if (arrival) text += ` • ETA ${arrival.earliestText}–${arrival.latestText}`;
-                if (atRisk) text += ' • ⚠ AT RISK';
-
-                text += '\n';
+            if (zone.enemyPresent.length === 0 && zone.enemyInbound.length === 0) {
+                text += 'None\n';
             }
-        }
 
-        text += '\n☠️ ENEMIES\n';
+            if (zone.enemyPresent.length > 0) {
+                text += `Present (${zone.enemyPresent.length}):\n`;
 
-        if (zone.enemyPresent.length === 0 && zone.enemyInbound.length === 0) {
-            text += 'None\n';
-        }
+                for (const member of zone.enemyPresent) {
+                    const bs = getMemberBS(member);
 
-        if (zone.enemyPresent.length > 0) {
-            text += `Present (${zone.enemyPresent.length}):\n`;
+                    text += `• ${member.playerName}`;
 
-            for (const member of zone.enemyPresent) {
-                const bs = getMemberBS(member);
+                    if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
+                    if (member.factionName) text += ` • ${member.factionName}`;
 
-                text += `• ${member.playerName}`;
-
-                if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
-                if (member.factionName) text += ` • ${member.factionName}`;
-
-                text += '\n';
+                    text += '\n';
+                }
             }
-        }
 
-        if (zone.enemyInbound.length > 0) {
-            text += `Inbound (${zone.enemyInbound.length}):\n`;
+            if (zone.enemyInbound.length > 0) {
+                text += `Inbound (${zone.enemyInbound.length}):\n`;
 
-            for (const member of zone.enemyInbound) {
-                const bs = getMemberBS(member);
-                const arrival = getMemberArrivalWindow(member);
+                for (const member of zone.enemyInbound) {
+                    const bs = getMemberBS(member);
+                    const arrival = getMemberArrivalWindow(member);
 
-                text += `• ${member.playerName}`;
+                    text += `• ${member.playerName}`;
 
-                if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
-                if (member.flightType) text += ` • ${member.flightType}`;
-                if (arrival) text += ` • ETA ${arrival.earliestText}–${arrival.latestText}`;
-                if (member.factionName) text += ` • ${member.factionName}`;
+                    if (bs != null) text += ` • ⚔ ${formatBS(bs)}`;
+                    if (member.flightType) text += ` • ${member.flightType}`;
+                    if (arrival) text += ` • ETA ${arrival.earliestText}–${arrival.latestText}`;
+                    if (member.factionName) text += ` • ${member.factionName}`;
 
-                text += '\n';
+                    text += '\n';
+                }
             }
         }
 
@@ -1497,8 +1782,9 @@
             alert('No friendly or enemy members are abroad or inbound.');
             return;
         }
-
-        let text = `Abroad Report – ${ownFaction.name}\n\n`;
+        let text = state.abroadView === 'danger'
+        ? `Abroad Report – Full Danger – ${ownFaction.name}\n\n`
+    : `Abroad Report – All – ${ownFaction.name}\n\n`;
 
         for (const country of countryNames) {
             text += buildAbroadCountryCopyText(country, countries[country]);
@@ -1528,42 +1814,47 @@
 
         const strongerEnemyExists = !isEnemy && !fullRisk && bs != null && enemyPool.some(enemy => {
             const enemyBS = getMemberBS(enemy);
-
             return enemyBS != null && enemyBS > bs;
         });
 
-        let rightMeta = '';
+        let statusText = '';
 
         if (member.status === 'traveling') {
             const arrival = getMemberArrivalWindow(member);
 
             if (arrival) {
-                rightMeta = `<span class="tt-abroad-meta">ETA ${arrival.earliestText}–${arrival.latestText}</span>`;
+                statusText = `Inbound • ETA ${arrival.earliestText}–${arrival.latestText}`;
             } else {
-                rightMeta = `<span class="tt-abroad-meta">${escapeHtml(member.flightType || 'Inbound')}</span>`;
+                statusText = `Inbound • ${member.flightType || 'Flight'}`;
             }
         } else {
-            rightMeta = `<span class="tt-abroad-meta">Present</span>`;
+            statusText = 'Present';
         }
 
         return `<div class="tt-abroad-person">
-            <div class="tt-abroad-person-left">
-                <a class="tt-abroad-name" href="/profiles.php?XID=${member.xid}" target="_blank">${escapeHtml(member.playerName)}</a>
-                ${bsPill}
-                ${strongerEnemyExists ? '<span class="tt-at-risk-indicator">⚠ AT RISK</span>' : ''}
-            </div>
-            ${rightMeta}
-        </div>`;
+        <div class="tt-abroad-person-left">
+            <a class="tt-abroad-name" href="/profiles.php?XID=${member.xid}" target="_blank">${escapeHtml(member.playerName)}</a>
+            ${bsPill}
+            ${strongerEnemyExists ? '<span class="tt-at-risk-indicator">⚠ AT RISK</span>' : ''}
+        </div>
+        <div class="tt-abroad-meta">${escapeHtml(statusText)}</div>
+    </div>`;
     }
 
-    function renderAbroadSection(title, titleClass, present, inbound, isEnemy, fullRisk, enemyPool) {
+    function renderAbroadSection(title, titleClass, present, inbound, isEnemy, fullRisk, enemyPool, sectionKey) {
         if (present.length === 0 && inbound.length === 0) return '';
 
-        let html = `<div class="tt-abroad-side">
-            <div class="tt-abroad-side-title ${titleClass}">
-                <span>${title}</span>
+        const isCollapsed = state.abroadCollapsedSections.has(sectionKey);
+
+        let html = `<div class="tt-abroad-side ${isCollapsed ? 'collapsed' : ''}" data-abroad-section="${escapeHtml(sectionKey)}">
+        <div class="tt-abroad-side-title ${titleClass}">
+            <span>${title}</span>
+            <div class="tt-abroad-side-title-right">
                 <span>${present.length + inbound.length}</span>
-            </div>`;
+                <span class="tt-abroad-collapse-icon">${isCollapsed ? '▶' : '▼'}</span>
+            </div>
+        </div>
+        <div class="tt-abroad-side-body">`;
 
         if (present.length > 0) {
             html += `<div class="tt-abroad-subtitle">Currently present (${present.length})</div>`;
@@ -1599,7 +1890,7 @@
             }
         }
 
-        html += '</div>';
+        html += '</div></div>';
 
         return html;
     }
@@ -1610,21 +1901,35 @@
         if (!ownFaction) return '<div class="tt-abroad-empty">No faction data available.</div>';
 
         const countries = buildAbroadData(fid);
+
         const countryNames = Object.keys(countries).sort((a, b) => a.localeCompare(b));
 
+        let html = `
+        <div class="tt-abroad-filter-row">
+            <button class="tt-abroad-filter ${state.abroadView === 'all' ? 'active' : ''}" data-abroad-view="all">All</button>
+            <button class="tt-abroad-filter danger ${state.abroadView === 'danger' ? 'active' : ''}" data-abroad-view="danger">⚠ Full Danger</button>
+        </div>
+    `;
+
         if (countryNames.length === 0) {
-            return '<div class="tt-abroad-empty">No friendly or enemy members are currently abroad or inbound.</div>';
+            html += '<div class="tt-abroad-empty">No friendly or enemy members are currently abroad or inbound.</div>';
+            return html;
         }
 
-        let html = '';
+        let renderedCount = 0;
 
         for (const country of countryNames) {
             const zone = countries[country];
             const risk = getAbroadZoneRisk(zone);
+            if (state.abroadView === 'danger' && !risk.fullRisk) continue;
 
             const friendlies = risk.friendlies;
             const enemies = risk.enemies;
             const fullRisk = risk.fullRisk;
+
+            if (state.abroadView === 'danger' && !fullRisk) continue;
+
+            renderedCount++;
 
             const flag = FLAG_EMOJI[country] || '🌍';
             const friendlyCount = friendlies.length;
@@ -1632,23 +1937,49 @@
             const countryCopyText = buildAbroadCountryCopyText(country, zone);
 
             html += `<div class="tt-abroad-country ${fullRisk ? 'tt-abroad-country--risk' : ''}" data-abroad-copy="${escapeHtml(countryCopyText)}">
-                <div class="tt-abroad-country-header">
-                    <div class="tt-abroad-country-name">${flag} ${escapeHtml(country)}</div>
-                    <div class="tt-abroad-summary">Friendly ${friendlyCount} • Enemy ${enemyCount}</div>
-                </div>`;
+            <div class="tt-abroad-country-header">
+                <div class="tt-abroad-country-name">${flag} ${escapeHtml(country)}</div>
+                <div class="tt-abroad-summary">Friendly ${friendlyCount} • Enemy ${enemyCount}</div>
+            </div>`;
 
             if (fullRisk) {
-                html += `<div class="tt-abroad-risk-banner">⚠ AT RISK — an enemy in or inbound to ${escapeHtml(country)} is stronger than every known friendly member here.</div>`;
+                html += `<div class="tt-abroad-risk-banner">⚠ FULL DANGER — an enemy in or inbound to ${escapeHtml(country)} is stronger than every known friendly member here.</div>`;
             }
 
-            html += renderAbroadSection('👥 Friendlies', 'tt-abroad-side-title--friendly', zone.friendlyPresent, zone.friendlyInbound, false, fullRisk, enemies);
-            html += renderAbroadSection('☠️ Enemies', 'tt-abroad-side-title--enemy', zone.enemyPresent, zone.enemyInbound, true, fullRisk, enemies);
+            html += renderAbroadSection(
+                '👥 Friendlies',
+                'tt-abroad-side-title--friendly',
+                zone.friendlyPresent,
+                zone.friendlyInbound,
+                false,
+                fullRisk,
+                enemies,
+                `${country}-friendly`
+        );
+
+            html += renderAbroadSection(
+                '☠️ Enemies',
+                'tt-abroad-side-title--enemy',
+                zone.enemyPresent,
+                zone.enemyInbound,
+                true,
+                fullRisk,
+                enemies,
+                `${country}-enemy`
+        );
 
             html += '</div>';
         }
 
+        if (renderedCount === 0) {
+            html += state.abroadView === 'danger'
+                ? '<div class="tt-abroad-empty">No Full Danger locations detected.</div>'
+            : '<div class="tt-abroad-empty">No friendly or enemy members are currently abroad or inbound.</div>';
+        }
+
         return html;
     }
+
 
     // ==================== MAIN RENDER ====================
     function updatePanelContent() {
@@ -1673,7 +2004,11 @@
         }
 
         const fids = Object.keys(state.watchedFactions);
-        const isOwnFactionSelected = state.selectedFactionId && state.selectedFactionId === state.myFactionID;
+        const isOwnFactionSelected = !!(
+            state.selectedFactionId &&
+            state.myFactionID &&
+            String(state.selectedFactionId) === String(state.myFactionID)
+        );
 
         let tabsHtml = '';
 
@@ -1941,6 +2276,41 @@
                         setTimeout(() => this.style.borderColor = orig || '', 600);
                     }).catch(() => {});
                 }
+            });
+        });
+
+        panel.querySelectorAll('.tt-abroad-filter').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+
+                const view = btn.dataset.abroadView;
+
+                if (!view || view === state.abroadView) return;
+
+                state.abroadView = view;
+                updatePanelContent();
+            });
+        });
+
+        panel.querySelectorAll('.tt-abroad-side-title').forEach(header => {
+            header.addEventListener('click', e => {
+                e.stopPropagation();
+
+                const section = header.closest('.tt-abroad-side');
+
+                if (!section) return;
+
+                const sectionKey = section.dataset.abroadSection;
+
+                if (!sectionKey) return;
+
+                if (state.abroadCollapsedSections.has(sectionKey)) {
+                    state.abroadCollapsedSections.delete(sectionKey);
+                } else {
+                    state.abroadCollapsedSections.add(sectionKey);
+                }
+
+                updatePanelContent();
             });
         });
     }
