@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v17.1.3 – Biz Window Visible + OUT/RET Pills + Bold White Elapsed
+// @name         1 Doits Flight Tracker v17.1.3
 // @namespace    https://github.com/your-repo
 // @version      17.1.3
 // @description  Biz line always shown when toggled, OUT/RET pills, bold white elapsed time, mobile-first
