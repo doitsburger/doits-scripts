@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.1
+// @name         1 Doits Flight Tracker v18.4.2
 // @namespace    https://github.com/your-repo
-// @version      18.4.1
-// @description  Private Cloudflare tracker with one-key registration, faction applications, automatic installation linking, admin approval, faction access, recovery, and admin management
+// @version      18.4.2
+// @description  Private Cloudflare travel tracker with faction applications, desktop/mobile UI, built-in welcome and help, threat awareness, recovery, and admin management
 // @author       Doitsburger
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -109,6 +109,28 @@
         } catch (e) {}
     }
 
+    const HELP_WELCOME_STORAGE_KEY = 'trackerHelpWelcomeSeenV1842';
+
+    function getInitialHelpWelcomeSeen() {
+        const stored = GM_getValue(HELP_WELCOME_STORAGE_KEY, null);
+
+        if (stored === true || stored === false) return stored;
+
+        // Existing v18.4.x installations already know the tracker, so do not
+        // surprise them with a first-run card after an ordinary script update.
+        const hadExistingTrackerAccount = !!(
+            GM_getValue('trackerClientId', '') &&
+            GM_getValue('trackerClientSecret', '')
+        );
+
+        if (hadExistingTrackerAccount) {
+            GM_setValue(HELP_WELCOME_STORAGE_KEY, true);
+            return true;
+        }
+
+        return false;
+    }
+
     // ==================== STATE ====================
     let myBattleStats = null;
     let pollTimer = null;
@@ -154,6 +176,9 @@
         factionApplicationLastPoll: 0,
         factionApplicationLoading: false,
         factionApplicationBusy: false,
+        helpWelcomeSeen: getInitialHelpWelcomeSeen(),
+        helpReturnMode: 'factions',
+        helpOpenSections: new Set(['factions']),
         adminRequests: { pendingCount: 0, approvedCount: 0, requests: [] },
         adminFactionApplications: { pendingCount: 0, needsInfoCount: 0, applications: [] },
         adminFactionApplicationDetail: null,
@@ -2122,7 +2147,7 @@
       .tt-pending-line:last-child { border-bottom:0; }
 
 
-      /* v18.4.1 - admin-matched universal onboarding + Global Pool state */
+      /* v18.4.2 - admin-matched universal onboarding + Global Pool state */
       #travel-panel .tt-onboard-shell,
       #travel-panel .tt-onboard-shell * { box-sizing:border-box; }
       #travel-panel .tt-onboard-shell { min-height:100%;display:flex;flex-direction:column;text-align:left;color:#F5F5F5 !important;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif !important;font-size:12px !important;line-height:1.35 !important; }
@@ -2228,6 +2253,36 @@
       .tt-app-status--approved { background:rgba(76,175,80,0.14);border:1px solid rgba(76,175,80,0.5);color:#C8E6C9; }
       .tt-app-status--declined { background:rgba(239,83,80,0.14);border:1px solid rgba(239,83,80,0.5);color:#FFCDD2; }
 
+
+      .tt-help-entry { width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.22);border-radius:50%;background:rgba(255,255,255,0.06);color:#E8E8E8;font-family:Georgia,serif;font-size:16px;font-weight:900;font-style:italic;line-height:1;cursor:pointer;touch-action:manipulation; }
+      .tt-help-entry:active { opacity:0.65; }
+      .tt-welcome-card { margin:0 0 10px;padding:13px;border:1px solid rgba(33,150,243,0.38);border-radius:10px;background:radial-gradient(circle at 0 0,rgba(33,150,243,0.12),transparent 56%),var(--tt-bg-card);box-shadow:var(--tt-shadow-soft); }
+      .tt-welcome-title { color:#fff;font-size:14px;font-weight:900;line-height:1.2; }
+      .tt-welcome-copy { margin-top:5px;color:var(--tt-text-muted);font-size:11px;line-height:1.45; }
+      .tt-welcome-actions { display:flex;gap:7px;flex-wrap:wrap;margin-top:11px; }
+      .tt-welcome-primary { flex:1;min-width:130px;border:1px solid rgba(33,150,243,0.58);background:rgba(33,150,243,0.16);color:#BBDEFB;border-radius:7px;padding:8px 10px;font-size:10px;font-weight:900;cursor:pointer;touch-action:manipulation; }
+      .tt-welcome-secondary { border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:var(--tt-text-muted);border-radius:7px;padding:8px 10px;font-size:10px;font-weight:800;cursor:pointer;touch-action:manipulation; }
+      .tt-help-purpose { margin-bottom:10px;padding:13px;border:1px solid rgba(33,150,243,0.32);border-radius:10px;background:radial-gradient(circle at 0 0,rgba(33,150,243,0.11),transparent 55%),var(--tt-bg-card); }
+      .tt-help-purpose-title { color:#fff;font-size:14px;font-weight:900;line-height:1.25; }
+      .tt-help-purpose-copy { margin-top:5px;color:var(--tt-text-muted);font-size:11px;line-height:1.5; }
+      .tt-help-quick { margin-bottom:10px;padding:12px;border:1px solid var(--tt-border-subtle);border-radius:10px;background:var(--tt-bg-card); }
+      .tt-help-quick-title { margin-bottom:8px;color:var(--tt-text-muted);font-size:11px;font-weight:900;letter-spacing:0.05em;text-transform:uppercase; }
+      .tt-help-step { display:grid;grid-template-columns:25px minmax(0,1fr);gap:8px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.055); }
+      .tt-help-step:last-child { border-bottom:0; }
+      .tt-help-step-num { width:23px;height:23px;display:flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);color:#fff;font-size:10px;font-weight:900; }
+      .tt-help-step strong { display:block;color:#fff;font-size:11px;line-height:1.25; }
+      .tt-help-step span { display:block;margin-top:2px;color:var(--tt-text-soft);font-size:10px;line-height:1.4; }
+      .tt-help-section { margin-bottom:7px;border:1px solid var(--tt-border-subtle);border-radius:9px;background:var(--tt-bg-card);overflow:hidden; }
+      .tt-help-toggle { width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border:0;background:transparent;color:#fff;text-align:left;font:inherit;font-size:11px;font-weight:900;letter-spacing:0.02em;cursor:pointer;touch-action:manipulation; }
+      .tt-help-toggle span:last-child { color:var(--tt-text-soft);font-size:12px; }
+      .tt-help-body { padding:0 12px 12px;color:var(--tt-text-muted);font-size:10.5px;line-height:1.5; }
+      .tt-help-body p { margin:0 0 8px; }
+      .tt-help-body p:last-child { margin-bottom:0; }
+      .tt-help-callout { margin:8px 0;padding:8px 9px;border-left:3px solid rgba(255,179,0,0.72);background:rgba(255,179,0,0.08);color:#E6E6E6; }
+      .tt-help-callout--blue { border-left-color:rgba(33,150,243,0.75);background:rgba(33,150,243,0.08); }
+      .tt-help-key { display:inline-flex;align-items:center;gap:5px;margin:2px 5px 2px 0;padding:3px 7px;border-radius:999px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.045);color:#E8E8E8;font-size:9px;font-weight:800;white-space:nowrap; }
+      .tt-help-swatch { width:8px;height:8px;border-radius:50%;display:inline-block; }
+
       @media (max-width:600px) {
         .tt-abroad-person { grid-template-columns:1fr;gap:3px;padding:7px 0; }
         .tt-abroad-meta { text-align:left;padding-left:0; }
@@ -2236,6 +2291,131 @@
     `;
 
         document.head.appendChild(style);
+    }
+
+    function markHelpWelcomeSeen() {
+        state.helpWelcomeSeen = true;
+        GM_setValue(HELP_WELCOME_STORAGE_KEY, true);
+    }
+
+    function renderHelpEntryButton() {
+        return '<button id="tt-help-entry" class="tt-help-entry" title="How to use Doits Flight Tracker" aria-label="How to use Doits Flight Tracker">i</button>';
+    }
+
+    function openHelpPanel(returnMode = null) {
+        const currentMode = String(returnMode || state.panelMode || 'factions');
+        state.helpReturnMode = ['factions', 'individuals', 'account', 'admin'].includes(currentMode) ? currentMode : 'factions';
+        markHelpWelcomeSeen();
+        state.panelMode = 'help';
+        state.selectedFactionId = null;
+        updatePanelContent();
+    }
+
+    function bindHelpEntryButton() {
+        document.getElementById('tt-help-entry')?.addEventListener('click', e => {
+            e.stopPropagation();
+            openHelpPanel();
+        });
+    }
+
+    function renderFirstRunWelcomeCard() {
+        if (state.helpWelcomeSeen) return '';
+
+        return `<div class="tt-welcome-card">
+          <div class="tt-welcome-title">&#128075; WELCOME TO DOITS FLIGHT TRACKER</div>
+          <div class="tt-welcome-copy">Your tracker is ready. See who's flying, when they're expected to land, who's abroad, and whether a stronger opponent could be heading your way.</div>
+          <div class="tt-welcome-actions"><button id="tt-welcome-show-help" class="tt-welcome-primary">SHOW ME HOW</button><button id="tt-welcome-dismiss" class="tt-welcome-secondary">I'M GOOD</button></div>
+        </div>`;
+    }
+
+    function bindFirstRunWelcomeCard() {
+        document.getElementById('tt-welcome-show-help')?.addEventListener('click', e => {
+            e.stopPropagation();
+            openHelpPanel();
+        });
+
+        document.getElementById('tt-welcome-dismiss')?.addEventListener('click', e => {
+            e.stopPropagation();
+            markHelpWelcomeSeen();
+            updatePanelContent();
+        });
+    }
+
+    function renderHelpSection(key, title, body) {
+        const open = state.helpOpenSections.has(key);
+
+        return `<div class="tt-help-section">
+          <button class="tt-help-toggle" data-help-section="${escapeHtml(key)}"><span>${title}</span><span>${open ? '&#9660;' : '&#9654;'}</span></button>
+          ${open ? `<div class="tt-help-body">${body}</div>` : ''}
+        </div>`;
+    }
+
+    function renderHelpPanel() {
+        const sections = [
+            renderHelpSection('factions', 'FACTIONS & OPPONENTS', `
+              <p>Your own faction is tracked automatically. To watch another faction, open its Torn faction profile and use <strong>WATCH</strong>.</p>
+              <div class="tt-help-callout"><strong>WATCH does not mean OPPONENT.</strong><br>Watching a faction only gives you its travel information. Mark it <strong>OPPONENT</strong> only when you want that faction treated as an enemy for Abroad comparisons and threat alerts.</div>
+              <p>You can stop watching non-own factions at any time. Your own faction stays available automatically.</p>`),
+            renderHelpSection('individuals', 'INDIVIDUAL TRACKING', `
+              <p>Use the <strong>INDIVIDUALS</strong> tab to track specific Torn players without needing to watch their entire faction.</p>
+              <div class="tt-help-callout tt-help-callout--blue"><strong>Individual tracking is neutral.</strong><br>A tracked individual is not automatically treated as an enemy and does not become part of OPPONENT threat logic.</div>
+              <p>Open a Torn player profile and use <strong>TRACK</strong>, or enter a player ID from the Individuals view.</p>`),
+            renderHelpSection('flight-times', 'FLIGHT TIMES & LANDING WINDOWS', `
+              <p><strong>Your own flight:</strong> your authenticated tracker can use Torn's actual arrival timestamp, so your personal countdown can be exact.</p>
+              <p><strong>Other players:</strong> Torn does not provide their exact arrival timestamp to this tracker. Their landing time is therefore shown as a realistic earliest-to-latest window.</p>
+              <div class="tt-help-callout"><strong>Why a window?</strong><br>The tracker may first detect another player's departure shortly after it actually happened, and it can take another collection cycle to confirm they have landed. The displayed window is designed to account for both edges.</div>
+              <p><strong>OUT</strong> means travelling away from Torn. <strong>RET</strong> means returning to Torn. <strong>LANDING</strong> means the flight has entered its arrival window. <strong>LANDED</strong> remains visible briefly after landing.</p>`),
+            renderHelpSection('abroad', 'ABROAD & THREAT ALERTS', `
+              <p>Select your own faction and open <strong>ABROAD</strong> to see your faction members who are currently overseas or inbound, alongside watched factions you deliberately marked as OPPONENT.</p>
+              <p><strong>AT RISK</strong> means a known opponent in that country is stronger than that particular friendly. <strong>OUTMATCHED</strong> means at least one known opponent is stronger than every friendly with known battle stats in that location.</p>
+              <p>When you are abroad, the compact &#128680; alert can surface a stronger OPPONENT who is already present or inbound to your country. Tap it to see the names and estimated battle stats.</p>`),
+            renderHelpSection('account', 'ACCOUNT & FACTION ACCESS', `
+              <p><strong>ACCOUNT</strong> shows your tracker identity, current access type/status and your current Torn faction's tracker-registration state.</p>
+              <p>If your current faction is not registered, you can apply from the Account screen. The tracker confirms the faction from your authenticated account; you do not manually choose a faction ID.</p>
+              <p>Applications can be <strong>PENDING</strong>, <strong>NEEDS INFO</strong>, <strong>APPROVED</strong> or <strong>DECLINED</strong>. If the admin requests information, reply inside the application thread.</p>
+              <p>Once a faction is registered, its members can receive automatic faction access when they connect their own eligible Torn API key.</p>`),
+            renderHelpSection('colours', 'WHAT THE COLOURS MEAN', `
+              <p><span class="tt-help-key"><span class="tt-help-swatch" style="background:#2196F3;"></span>OUT</span><span class="tt-help-key"><span class="tt-help-swatch" style="background:#9C27B0;"></span>RETURN</span><span class="tt-help-key"><span class="tt-help-swatch" style="background:#FFB300;"></span>LANDING</span><span class="tt-help-key"><span class="tt-help-swatch" style="background:#4CAF50;"></span>LANDED</span></p>
+              <p>Battle-stat pills are relative to your own known battle stats: <span class="tt-help-key"><span class="tt-help-swatch" style="background:#87CEEB;"></span>much lower</span><span class="tt-help-key"><span class="tt-help-swatch" style="background:#28c628;"></span>lower</span><span class="tt-help-key"><span class="tt-help-swatch" style="background:#AA7DCE;"></span>similar / moderately higher</span><span class="tt-help-key"><span class="tt-help-swatch" style="background:#c62828;"></span>1.5x+ your BS</span></p>
+              <p>Red threat styling is reserved for opponent risk. Amber generally means something needs attention or is approaching a transition.</p>`),
+            renderHelpSection('about', 'ABOUT DOITS FLIGHT TRACKER', `
+              <p><strong>Doits Flight Tracker is a situational-awareness tool for Torn travel.</strong></p>
+              <p>It combines faction travel, individually tracked players, estimated landing windows, battle-stat intelligence and abroad threat awareness so you can quickly see who is moving and what matters to you.</p>
+              <p>It is designed to help you make decisions; estimated information should be treated as an estimate rather than an exact Torn timestamp.</p>`)
+        ].join('');
+
+        return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
+          <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9432;</span><div><div style="font-size:16px;font-weight:800;">How to use the Tracker</div><div style="font-size:11px;color:var(--tt-text-soft);">Welcome, purpose and quick instructions</div></div></div><div style="display:flex;align-items:center;gap:7px;"><button id="tt-help-back" class="tt-admin-action">BACK</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
+        </div>
+        <div class="tt-help-purpose"><div class="tt-help-purpose-title">&#9992;&#65039; DOITS FLIGHT TRACKER</div><div class="tt-help-purpose-copy">Know who's flying, where they're going, when they're likely to arrive, and whether a stronger opponent could become a problem while you're abroad.</div></div>
+        <div class="tt-help-quick"><div class="tt-help-quick-title">Quick Start</div>
+          <div class="tt-help-step"><div class="tt-help-step-num">1</div><div><strong>WATCH FACTIONS</strong><span>Your own faction is automatic. Watch other factions from their Torn faction page.</span></div></div>
+          <div class="tt-help-step"><div class="tt-help-step-num">2</div><div><strong>MARK REAL ENEMIES AS OPPONENT</strong><span>Only OPPONENT factions feed enemy Abroad and threat calculations.</span></div></div>
+          <div class="tt-help-step"><div class="tt-help-step-num">3</div><div><strong>TRACK INDIVIDUALS WHEN NEEDED</strong><span>Follow specific players without classifying them as enemies.</span></div></div>
+          <div class="tt-help-step"><div class="tt-help-step-num">4</div><div><strong>USE ABROAD FOR SITUATIONAL AWARENESS</strong><span>See friendly and opponent presence/inbound movement by country.</span></div></div>
+          <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Use exact self timing and estimated windows for other players.</span></div></div>
+        </div>
+        ${sections}
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.2</span></div></div>`;
+    }
+
+    function bindHelpPanel(panel) {
+        document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
+        document.getElementById('tt-help-back')?.addEventListener('click', () => {
+            const returnMode = ['factions', 'individuals', 'account', 'admin'].includes(state.helpReturnMode) ? state.helpReturnMode : 'factions';
+            state.panelMode = returnMode;
+            updatePanelContent();
+        });
+
+        panel.querySelectorAll('[data-help-section]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const key = String(btn.dataset.helpSection || '').trim();
+                if (!key) return;
+                if (state.helpOpenSections.has(key)) state.helpOpenSections.delete(key);
+                else state.helpOpenSections.add(key);
+                updatePanelContent();
+            });
+        });
     }
 
     function renderAccountEntryButton() {
@@ -2410,7 +2590,7 @@
         }
 
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
-          <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#128100;</span><div><div style="font-size:16px;font-weight:800;">Account & Access</div><div style="font-size:11px;color:var(--tt-text-soft);">Tracker identity and faction registration</div></div></div><div style="display:flex;align-items:center;gap:7px;"><button id="tt-account-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
+          <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#128100;</span><div><div style="font-size:16px;font-weight:800;">Account & Access</div><div style="font-size:11px;color:var(--tt-text-soft);">Tracker identity and faction registration</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-account-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
         </div>
         <div class="tt-account-card">
           <div class="tt-account-title">Your Access</div>
@@ -2424,11 +2604,12 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.1</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.2</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
+        bindHelpEntryButton();
         document.getElementById('tt-account-back')?.addEventListener('click', () => {
             state.panelMode = 'factions';
             updatePanelContent();
@@ -2625,9 +2806,9 @@
         else body = renderAdminRequestsSection();
 
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
-          <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;"><button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
+          <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.1</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.2</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -2645,6 +2826,7 @@
 
     function bindAdminPanel(panel) {
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
+        bindHelpEntryButton();
         document.getElementById('tt-admin-back')?.addEventListener('click', () => {
             state.panelMode = 'factions';
             updatePanelContent();
@@ -2819,7 +3001,9 @@
                 ? 'individuals'
                 : mode === 'account'
                     ? 'account'
-                    : (mode === 'admin' && isAdminUser() ? 'admin' : 'factions');
+                    : mode === 'help'
+                        ? 'help'
+                        : (mode === 'admin' && isAdminUser() ? 'admin' : 'factions');
         const existing = document.getElementById('travel-panel');
 
         if (existing) {
@@ -3940,7 +4124,7 @@
       <div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
         <div class="tt-row">
           <div class="tt-row-gap"><span style="font-size:22px;">\uD83D\uDC64</span><div><div style="font-size:16px;font-weight:700;">Tracked players</div><div style="font-size:12px;color:var(--tt-text-soft);">${trackedIds.length} player${trackedIds.length !== 1 ? 's' : ''} \u2022 Cloud</div></div></div>
-          <div style="display:flex;gap:7px;align-items:center;">${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
+          <div style="display:flex;gap:7px;align-items:center;">${renderHelpEntryButton()}${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
         </div>
         ${renderMainModeTabs()}
         ${renderAccessNotice()}
@@ -3950,8 +4134,10 @@
         </div>
       </div>`;
 
+        const welcomeHtml = renderFirstRunWelcomeCard();
+
         if (!trackedIds.length) {
-            return headerHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.2</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -3984,14 +4170,16 @@
             }
         }
 
-        return headerHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.2</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
+        bindHelpEntryButton();
         bindAccountEntryButton();
         bindAdminEntryButton();
+        bindFirstRunWelcomeCard();
         bindAccessRecoveryActions();
 
         const action = document.getElementById('tt-individual-track-action');
@@ -4076,7 +4264,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.1</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.2</span></div>
         </div>`;
     }
 
@@ -4127,7 +4315,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.1</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.2</span></div>
             </div>`;
         }
 
@@ -4161,7 +4349,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.1</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.2</span></div>
         </div>`;
     }
 
@@ -4219,6 +4407,12 @@
             return;
         }
 
+        if (state.panelMode === 'help') {
+            panel.innerHTML = renderHelpPanel();
+            bindHelpPanel(panel);
+            return;
+        }
+
         if (state.panelMode === 'account') {
             panel.innerHTML = renderAccountPanel();
             bindAccountPanel(panel);
@@ -4269,7 +4463,7 @@
       <div style="position:sticky;top:-16px;margin:-16px -16px 10px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
         <div class="tt-row">
           <div class="tt-row-gap"><span style="font-size:22px;">\u2708\uFE0F</span><div><div style="font-size:16px;font-weight:700;">Travel tracker</div><div style="font-size:12px;color:var(--tt-text-soft);">${fids.length} faction${fids.length !== 1 ? 's' : ''} \u2022 ${modeLabel}</div></div></div>
-          <div style="display:flex;gap:8px;align-items:center;">${copyAllBtnHtml}${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
+          <div style="display:flex;gap:8px;align-items:center;">${copyAllBtnHtml}${renderHelpEntryButton()}${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
         </div>
         ${renderMainModeTabs()}
         ${renderAccessNotice()}
@@ -4300,12 +4494,14 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.2</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
+        bindHelpEntryButton();
         bindAccountEntryButton();
         bindAdminEntryButton();
+        bindFirstRunWelcomeCard();
         bindAccessRecoveryActions();
 
         const copyAllBtn = document.getElementById('tt-copy-all-btn');
