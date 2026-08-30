@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.2
+// @name         1 Doits Flight Tracker v18.4.3
 // @namespace    https://github.com/your-repo
-// @version      18.4.2
+// @version      18.4.3
 // @description  Private Cloudflare travel tracker with faction applications, desktop/mobile UI, built-in welcome and help, threat awareness, recovery, and admin management
 // @author       Doitsburger
 // @match        https://www.torn.com/*
@@ -1271,6 +1271,23 @@
     }
 
     // ==================== NOTIFICATION DETECTION ====================
+    function isTravelAlertEligible(fid, xid) {
+        const playerId = String(xid || '').trim();
+        const factionId = String(fid || '').trim();
+
+        if (!playerId) return false;
+        if (playerId === String(state.myUserID || '')) return false;
+
+        // Explicit individual tracking always opts this player into travel alerts,
+        // even when they also appear inside the user's own or another watched faction.
+        if (state.trackedIndividuals?.[playerId]) return true;
+
+        // Merely WATCHING a faction is visibility only. Travel alerts from factions
+        // are reserved for factions deliberately marked OPPONENT.
+        if (!factionId || factionId === '__tracked__') return false;
+        return isOpponentFaction(factionId);
+    }
+
     function detectNewFlights(currentFactions) {
         cleanupNotifiedFlights();
 
@@ -1287,6 +1304,7 @@
                 if (!member || member.status !== 'traveling') continue;
                 if (member.destination === 'Torn') continue;
                 if (String(xid) === String(state.myUserID)) continue;
+                if (!isTravelAlertEligible(fid, xid)) continue;
                 if (member.destination !== state.myDestination) continue;
 
                 const newlyTraveling = !previous || previous.status !== 'traveling';
@@ -1322,6 +1340,8 @@
                 const member = members[xid];
 
                 if (!member || member.status !== 'traveling') continue;
+                if (String(xid) === String(state.myUserID)) continue;
+                if (!isTravelAlertEligible(fid, xid)) continue;
                 if (!member.travelStarted || !member.lookupDest || !member.flightType) continue;
 
                 const arrival = getMemberArrivalWindow(member);
@@ -2147,7 +2167,7 @@
       .tt-pending-line:last-child { border-bottom:0; }
 
 
-      /* v18.4.2 - admin-matched universal onboarding + Global Pool state */
+      /* v18.4.3 - admin-matched universal onboarding + Global Pool state */
       #travel-panel .tt-onboard-shell,
       #travel-panel .tt-onboard-shell * { box-sizing:border-box; }
       #travel-panel .tt-onboard-shell { min-height:100%;display:flex;flex-direction:column;text-align:left;color:#F5F5F5 !important;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif !important;font-size:12px !important;line-height:1.35 !important; }
@@ -2354,11 +2374,11 @@
         const sections = [
             renderHelpSection('factions', 'FACTIONS & OPPONENTS', `
               <p>Your own faction is tracked automatically. To watch another faction, open its Torn faction profile and use <strong>WATCH</strong>.</p>
-              <div class="tt-help-callout"><strong>WATCH does not mean OPPONENT.</strong><br>Watching a faction only gives you its travel information. Mark it <strong>OPPONENT</strong> only when you want that faction treated as an enemy for Abroad comparisons and threat alerts.</div>
+              <div class="tt-help-callout"><strong>WATCH does not mean OPPONENT.</strong><br>Watching a faction only gives you its travel information and does not create travel notifications. Mark it <strong>OPPONENT</strong> when you want that faction treated as an enemy for Abroad comparisons, threat monitoring and travel/landing alerts.</div>
               <p>You can stop watching non-own factions at any time. Your own faction stays available automatically.</p>`),
             renderHelpSection('individuals', 'INDIVIDUAL TRACKING', `
               <p>Use the <strong>INDIVIDUALS</strong> tab to track specific Torn players without needing to watch their entire faction.</p>
-              <div class="tt-help-callout tt-help-callout--blue"><strong>Individual tracking is neutral.</strong><br>A tracked individual is not automatically treated as an enemy and does not become part of OPPONENT threat logic.</div>
+              <div class="tt-help-callout tt-help-callout--blue"><strong>Individual tracking is neutral.</strong><br>A tracked individual is not automatically treated as an enemy and does not become part of OPPONENT threat logic. Because you deliberately tracked them, their relevant travel/landing notifications remain enabled.</div>
               <p>Open a Torn player profile and use <strong>TRACK</strong>, or enter a player ID from the Individuals view.</p>`),
             renderHelpSection('flight-times', 'FLIGHT TIMES & LANDING WINDOWS', `
               <p><strong>Your own flight:</strong> your authenticated tracker can use Torn's actual arrival timestamp, so your personal countdown can be exact.</p>
@@ -2368,7 +2388,7 @@
             renderHelpSection('abroad', 'ABROAD & THREAT ALERTS', `
               <p>Select your own faction and open <strong>ABROAD</strong> to see your faction members who are currently overseas or inbound, alongside watched factions you deliberately marked as OPPONENT.</p>
               <p><strong>AT RISK</strong> means a known opponent in that country is stronger than that particular friendly. <strong>OUTMATCHED</strong> means at least one known opponent is stronger than every friendly with known battle stats in that location.</p>
-              <p>When you are abroad, the compact &#128680; alert can surface a stronger OPPONENT who is already present or inbound to your country. Tap it to see the names and estimated battle stats.</p>`),
+              <p>When you are abroad, a faint compact &#128680; alert sits at the top-left when a stronger OPPONENT is present or inbound to your country. Tap it to open the fully visible threat panel with each opponent's battle-stat estimate and live arrival countdown window.</p>`),
             renderHelpSection('account', 'ACCOUNT & FACTION ACCESS', `
               <p><strong>ACCOUNT</strong> shows your tracker identity, current access type/status and your current Torn faction's tracker-registration state.</p>
               <p>If your current faction is not registered, you can apply from the Account screen. The tracker confirms the faction from your authenticated account; you do not manually choose a faction ID.</p>
@@ -2393,10 +2413,10 @@
           <div class="tt-help-step"><div class="tt-help-step-num">2</div><div><strong>MARK REAL ENEMIES AS OPPONENT</strong><span>Only OPPONENT factions feed enemy Abroad and threat calculations.</span></div></div>
           <div class="tt-help-step"><div class="tt-help-step-num">3</div><div><strong>TRACK INDIVIDUALS WHEN NEEDED</strong><span>Follow specific players without classifying them as enemies.</span></div></div>
           <div class="tt-help-step"><div class="tt-help-step-num">4</div><div><strong>USE ABROAD FOR SITUATIONAL AWARENESS</strong><span>See friendly and opponent presence/inbound movement by country.</span></div></div>
-          <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Use exact self timing and estimated windows for other players.</span></div></div>
+          <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.2</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.3</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -2604,7 +2624,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.2</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.3</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -2808,7 +2828,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.2</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.3</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -3790,6 +3810,26 @@
         return threats;
     }
 
+    function getThreatCountdownText(threat, now = Date.now()) {
+        if (!threat) return '--';
+        if (threat.type === 'present') return 'PRESENT';
+
+        const earliest = Number(threat.earliest);
+        const latest = Number(threat.latest);
+
+        if (!Number.isFinite(earliest) || !Number.isFinite(latest)) return 'ETA --';
+
+        if (now < earliest) {
+            return `${formatTime(earliest - now)}-${formatTime(Math.max(0, latest - now))}`;
+        }
+
+        if (now < latest) {
+            return `LANDING • ${formatTime(latest - now)}`;
+        }
+
+        return 'LANDING';
+    }
+
     function getThreatOverlayStatus(threats) {
         if (!threats.length) return null;
 
@@ -3810,8 +3850,17 @@
         inbound.sort((a, b) => a.earliest - b.earliest);
 
         const threat = inbound[0];
+        const earliest = Number(threat.earliest);
+        const latest = Number(threat.latest);
 
-        if (now >= threat.earliest) {
+        if (Number.isFinite(earliest) && now < earliest) {
+            return {
+                text: formatTime(earliest - now),
+                threat
+            };
+        }
+
+        if (Number.isFinite(latest) && now < latest) {
             return {
                 text: 'LANDING',
                 threat
@@ -3819,7 +3868,7 @@
         }
 
         return {
-            text: formatTime(threat.earliest - now),
+            text: 'LANDING',
             threat
         };
     }
@@ -3834,42 +3883,54 @@
         style.textContent = `
             #tt-threat-overlay {
                 position:fixed;
-                top:72px;
-                left:8px;
+                top:2px;
+                left:2px;
                 z-index:2147483646;
                 font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
                 color:#fff;
+                opacity:0.22;
                 user-select:none;
                 -webkit-user-select:none;
                 -webkit-tap-highlight-color:transparent;
                 touch-action:manipulation;
+                transition:opacity 0.16s ease-out;
             }
 
             #tt-threat-overlay.tt-threat-hidden {
                 display:none;
             }
 
+            #tt-threat-overlay.tt-threat-expanded {
+                opacity:1;
+            }
+
             .tt-threat-compact {
                 display:flex;
                 align-items:center;
-                gap:6px;
-                min-height:34px;
-                padding:5px 10px;
-                border-radius:3px;
-                background:rgba(20,20,20,0.96);
-                border:1px solid rgba(239,83,80,0.85);
-                box-shadow:0 4px 16px rgba(0,0,0,0.55),0 0 10px rgba(239,83,80,0.18);
+                gap:5px;
+                min-height:28px;
+                padding:3px 7px;
+                border-radius:2px;
+                background:rgba(20,20,20,0.94);
+                border:1px solid rgba(239,83,80,0.82);
+                box-shadow:0 2px 8px rgba(0,0,0,0.45);
                 cursor:pointer;
             }
 
+            #tt-threat-overlay.tt-threat-expanded .tt-threat-compact {
+                background:#141414;
+                border-color:rgba(239,83,80,0.95);
+                box-shadow:0 4px 14px rgba(0,0,0,0.65);
+            }
+
             .tt-threat-icon {
-                font-size:17px;
+                font-size:14px;
                 line-height:1;
             }
 
             .tt-threat-time {
-                font-size:13px;
-                font-weight:800;
+                font-size:11px;
+                font-weight:900;
                 font-family:monospace;
                 white-space:nowrap;
                 color:#fff;
@@ -3879,96 +3940,124 @@
                 display:inline-flex;
                 align-items:center;
                 justify-content:center;
-                min-width:18px;
-                height:18px;
+                min-width:16px;
+                height:16px;
                 padding:0 4px;
                 border-radius:999px;
                 background:rgba(239,83,80,0.22);
                 border:1px solid rgba(239,83,80,0.55);
                 color:#FFCDD2;
-                font-size:9px;
-                font-weight:800;
+                font-size:8px;
+                font-weight:900;
             }
 
             .tt-threat-details {
                 display:none;
-                margin-top:4px;
-                min-width:185px;
-                max-width:260px;
-                padding:7px 9px;
+                margin-top:3px;
+                width:min(310px,calc(100vw - 8px));
+                padding:8px 9px;
                 border-radius:3px;
-                background:rgba(20,20,20,0.97);
-                border:1px solid rgba(239,83,80,0.7);
-                box-shadow:0 6px 18px rgba(0,0,0,0.65);
+                background:#141414;
+                border:1px solid rgba(239,83,80,0.82);
+                box-shadow:0 8px 22px rgba(0,0,0,0.76);
+                box-sizing:border-box;
             }
 
             #tt-threat-overlay.tt-threat-expanded .tt-threat-details {
                 display:block;
             }
 
-            .tt-threat-player {
+            .tt-threat-details-head {
                 display:flex;
                 align-items:center;
                 justify-content:space-between;
-                gap:12px;
-                padding:5px 2px;
-                border-bottom:1px solid rgba(255,255,255,0.06);
+                gap:10px;
+                padding:1px 1px 7px;
+                border-bottom:1px solid rgba(255,255,255,0.08);
+                color:#FFCDD2;
+                font-size:9px;
+                font-weight:900;
+                letter-spacing:0.05em;
+                text-transform:uppercase;
+            }
+
+            .tt-threat-player {
+                display:grid;
+                grid-template-columns:minmax(0,1fr) auto;
+                align-items:center;
+                gap:10px;
+                padding:8px 1px;
+                border-bottom:1px solid rgba(255,255,255,0.07);
             }
 
             .tt-threat-player:last-child {
                 border-bottom:none;
             }
 
-            .tt-threat-player-name {
+            .tt-threat-player-main {
                 min-width:0;
+            }
+
+            .tt-threat-player-name {
                 overflow:hidden;
                 text-overflow:ellipsis;
                 white-space:nowrap;
                 font-size:12px;
-                font-weight:700;
+                font-weight:800;
                 color:#F5F5F5;
             }
 
+            .tt-threat-player-sub {
+                margin-top:2px;
+                overflow:hidden;
+                text-overflow:ellipsis;
+                white-space:nowrap;
+                font-size:9px;
+                color:#999;
+            }
+
+            .tt-threat-player-side {
+                min-width:88px;
+                text-align:right;
+            }
+
             .tt-threat-player-bs {
-                flex-shrink:0;
-                font-size:11px;
+                display:block;
+                font-size:10px;
                 font-weight:800;
                 color:#FFCDD2;
                 white-space:nowrap;
             }
 
+            .tt-threat-player-timer {
+                display:block;
+                margin-top:2px;
+                font-family:monospace;
+                font-size:10px;
+                font-weight:900;
+                color:#fff;
+                white-space:nowrap;
+            }
+
+            .tt-threat-player--present .tt-threat-player-timer {
+                color:#FFCDD2;
+            }
+
+            .tt-threat-player--landing .tt-threat-player-timer {
+                color:#FFE082;
+            }
+
             .tt-threat-present .tt-threat-compact {
                 border-color:#c62828;
-                box-shadow:0 4px 16px rgba(0,0,0,0.55),0 0 13px rgba(198,40,40,0.35);
             }
 
             .tt-threat-landing .tt-threat-compact {
                 border-color:#FFB300;
-                box-shadow:0 4px 16px rgba(0,0,0,0.55),0 0 12px rgba(255,179,0,0.28);
             }
 
             @media (max-width:600px) {
-                #tt-threat-overlay {
-                    top:64px;
-                    left:6px;
-                }
-
-                .tt-threat-compact {
-                    min-height:31px;
-                    padding:4px 8px;
-                }
-
-                .tt-threat-icon {
-                    font-size:16px;
-                }
-
-                .tt-threat-time {
-                    font-size:12px;
-                }
-
                 .tt-threat-details {
-                    min-width:170px;
-                    max-width:230px;
+                    width:min(290px,calc(100vw - 8px));
                 }
             }
         `;
@@ -3987,7 +4076,7 @@
         overlay.className = 'tt-threat-hidden';
 
         overlay.innerHTML = `
-            <div class="tt-threat-compact">
+            <div class="tt-threat-compact" role="button" aria-label="Open threat details" tabindex="0">
                 <span class="tt-threat-icon">\uD83D\uDEA8</span>
                 <span class="tt-threat-time">--:--</span>
                 <span class="tt-threat-count" style="display:none;"></span>
@@ -3995,11 +4084,28 @@
             <div class="tt-threat-details"></div>
         `;
 
-        overlay.addEventListener('click', e => {
+        const compact = overlay.querySelector('.tt-threat-compact');
+        const toggleExpanded = e => {
             e.stopPropagation();
-
             state.threatOverlayExpanded = !state.threatOverlayExpanded;
+            updateThreatOverlay();
+        };
 
+        compact?.addEventListener('click', toggleExpanded);
+        compact?.addEventListener('keydown', e => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            toggleExpanded(e);
+        });
+
+        overlay.querySelector('.tt-threat-details')?.addEventListener('click', e => {
+            e.stopPropagation();
+        });
+
+        document.addEventListener('click', e => {
+            if (!state.threatOverlayExpanded) return;
+            if (overlay.contains(e.target)) return;
+            state.threatOverlayExpanded = false;
             updateThreatOverlay();
         });
 
@@ -4013,6 +4119,7 @@
         const threats = getInboundThreats();
 
         if (!threats.length) {
+            state.threatOverlayExpanded = false;
             overlay.className = 'tt-threat-hidden';
             return;
         }
@@ -4020,6 +4127,7 @@
         const status = getThreatOverlayStatus(threats);
 
         if (!status) {
+            state.threatOverlayExpanded = false;
             overlay.className = 'tt-threat-hidden';
             return;
         }
@@ -4055,12 +4163,28 @@
         }
 
         if (detailsElement) {
-            detailsElement.innerHTML = threats.map(threat => {
-                return `<div class="tt-threat-player">
-                    <span class="tt-threat-player-name">${escapeHtml(threat.member.playerName)}</span>
-                    <span class="tt-threat-player-bs">\u2694 ${formatBS(threat.bs)}</span>
+            const now = Date.now();
+            const rows = threats.map(threat => {
+                const countdown = getThreatCountdownText(threat, now);
+                const flightType = threat.type === 'present' ? 'Already in country' : (threat.member.flightType || 'Flight');
+                const factionName = threat.factionName ? ` • ${escapeHtml(threat.factionName)}` : '';
+                const rowClass = threat.type === 'present'
+                    ? 'tt-threat-player--present'
+                    : (now >= Number(threat.earliest) ? 'tt-threat-player--landing' : '');
+
+                return `<div class="tt-threat-player ${rowClass}">
+                    <div class="tt-threat-player-main">
+                        <div class="tt-threat-player-name">${escapeHtml(threat.member.playerName)}</div>
+                        <div class="tt-threat-player-sub">${escapeHtml(flightType)}${factionName}</div>
+                    </div>
+                    <div class="tt-threat-player-side">
+                        <span class="tt-threat-player-bs">\u2694 ${formatBS(threat.bs)}</span>
+                        <span class="tt-threat-player-timer">${escapeHtml(countdown)}</span>
+                    </div>
                 </div>`;
             }).join('');
+
+            detailsElement.innerHTML = `<div class="tt-threat-details-head"><span>\uD83D\uDEA8 THREATS</span><span>${threats.length}</span></div>${rows}`;
         }
     }
 
@@ -4137,7 +4261,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.2</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4170,7 +4294,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.2</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4264,7 +4388,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.2</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.3</span></div>
         </div>`;
     }
 
@@ -4315,7 +4439,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.2</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.3</span></div>
             </div>`;
         }
 
@@ -4349,7 +4473,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.2</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.3</span></div>
         </div>`;
     }
 
@@ -4494,7 +4618,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.2</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
