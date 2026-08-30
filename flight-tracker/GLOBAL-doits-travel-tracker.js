@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.2.6 - Opponent + Exact Landing
+// @name         1 Doits Flight Tracker v18.4.1
 // @namespace    https://github.com/your-repo
-// @version      18.2.6
-// @description  Private Cloudflare tracker with one-key registration, automatic installation linking, admin approval, faction access, recovery, and admin management
-// @author       Doitsburger + Grok
+// @version      18.4.1
+// @description  Private Cloudflare tracker with one-key registration, faction applications, automatic installation linking, admin approval, faction access, recovery, and admin management
+// @author       Doitsburger
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -22,11 +22,12 @@
     const ACCESS_POLL_INTERVAL = 30000;
     const ADMIN_POLL_INTERVAL = 30000;
     const PANEL_UPDATE_INTERVAL = 250;
-    const DETECT_DELAY = 30000; // Cloud scheduler can first detect a departure up to one 30s cycle late.
+    const DETECT_DELAY = 60000; // 60s Global polling uncertainty: subtract at departure edge and add at landing-confirmation edge.
     const NOTIFICATION_HISTORY_MS = 24 * 60 * 60 * 1000;
     const FLIGHT_KEY_BUCKET_MS = 5 * 60 * 1000;
     const LANDING_ALERT_MS = 5 * 60 * 1000;
-    const EXACT_LANDING_PHASE_MS = 2 * 60 * 1000;
+    const EXACT_LANDING_PHASE_MS = 1 * 60 * 1000;
+    const LANDED_DISPLAY_MS = 1 * 60 * 1000;
 
     const DEFAULT_DURATIONS = {
         "Mexico": { "Commercial": 24, "Personal": 17, "Private": 12 },
@@ -149,7 +150,14 @@
         pendingActivationBusy: false,
         accessInfo: null,
         accessLastPoll: 0,
+        factionApplicationInfo: null,
+        factionApplicationLastPoll: 0,
+        factionApplicationLoading: false,
+        factionApplicationBusy: false,
         adminRequests: { pendingCount: 0, approvedCount: 0, requests: [] },
+        adminFactionApplications: { pendingCount: 0, needsInfoCount: 0, applications: [] },
+        adminFactionApplicationDetail: null,
+        adminFactionApplicationLoading: false,
         adminUsers: [],
         adminFactions: [],
         adminSection: 'requests',
@@ -407,6 +415,46 @@
         return null;
     }
 
+    function getMemberDisplayState(member, now = Date.now()) {
+        if (!member) return member;
+
+        const xid = String(
+            member.xid ??
+            member.playerId ??
+            member.player_id ??
+            ''
+        ).trim();
+        const rawStatus = String(member.status || 'idle');
+        const isSelf = !!(xid && xid === String(state.myUserID || ''));
+        const exactArrival = isSelf ? getMemberExactArrival({ ...member, xid }) : null;
+
+        if (rawStatus === 'traveling' && exactArrival != null && now >= exactArrival) {
+            if (now - exactArrival < LANDED_DISPLAY_MS) {
+                return { ...member, xid: xid || member.xid, status: 'landed', landedAt: exactArrival };
+            }
+
+            return {
+                ...member,
+                xid: xid || member.xid,
+                status: member.destination && member.destination !== 'Torn' ? 'abroad' : 'idle'
+            };
+        }
+
+        if (rawStatus === 'landed') {
+            const landedAt = Number(member.landedAt || 0);
+
+            if (Number.isFinite(landedAt) && landedAt > 0 && now - landedAt >= LANDED_DISPLAY_MS) {
+                return {
+                    ...member,
+                    xid: xid || member.xid,
+                    status: member.destination && member.destination !== 'Torn' ? 'abroad' : 'idle'
+                };
+            }
+        }
+
+        return xid && !member.xid ? { ...member, xid } : member;
+    }
+
     function getMemberArrivalWindow(member) {
         const exactArrival = getMemberExactArrival(member);
 
@@ -425,7 +473,7 @@
         const fastestMinutes = getFastestDuration(member.lookupDest, member.flightType);
         const slowestMinutes = getSlowestDuration(member.lookupDest, member.flightType);
         const earliest = Number(member.travelStarted) + fastestMinutes * 60000 - DETECT_DELAY;
-        const latest = Number(member.travelStarted) + slowestMinutes * 60000;
+        const latest = Number(member.travelStarted) + slowestMinutes * 60000 + DETECT_DELAY;
 
         return {
             earliest,
@@ -543,11 +591,18 @@
         state.myTravelArrival = null;
         state.accessInfo = null;
         state.accessLastPoll = 0;
+        state.factionApplicationInfo = null;
+        state.factionApplicationLastPoll = 0;
+        state.factionApplicationLoading = false;
+        state.factionApplicationBusy = false;
         state.registrationPending = false;
         state.registrationAccessLost = false;
         state.registrationBusy = false;
         state.pendingActivationBusy = false;
         state.adminRequests = { pendingCount: 0, approvedCount: 0, requests: [] };
+        state.adminFactionApplications = { pendingCount: 0, needsInfoCount: 0, applications: [] };
+        state.adminFactionApplicationDetail = null;
+        state.adminFactionApplicationLoading = false;
         state.adminUsers = [];
         state.adminFactions = [];
         state.adminLastPoll = 0;
@@ -861,7 +916,7 @@
             state.authenticated = true;
             state.myUserID = result.tornUserId ? String(result.tornUserId) : state.myUserID;
             state.myFactionID = result.ownFactionId ? String(result.ownFactionId) : null;
-            alert('Tracker connected. Your private 30-second Cloudflare tracker is now running.');
+            alert('Tracker connected. Your Cloudflare tracker is now running.');
             await refreshAccessStatus(true);
             await pollServer();
             if (state.panelVisible) updatePanelContent();
@@ -886,7 +941,7 @@
     }
 
     async function fetchState() {
-        return cloudRequest('GET', '/client/state');
+        return cloudRequest('GET', '/client/state-global');
     }
 
 
@@ -922,14 +977,119 @@
         }
     }
 
+    async function refreshFactionApplication(force = false) {
+        if (!hasTrackerCredentials()) return null;
+
+        const now = Date.now();
+        if (
+            !force &&
+            state.factionApplicationInfo &&
+            state.factionApplicationLastPoll &&
+            now - state.factionApplicationLastPoll < ACCESS_POLL_INTERVAL
+        ) {
+            return state.factionApplicationInfo;
+        }
+
+        if (state.factionApplicationLoading) return state.factionApplicationInfo;
+
+        state.factionApplicationLoading = true;
+
+        try {
+            const info = await cloudRequest('GET', '/client/faction-application');
+            state.factionApplicationInfo = info || null;
+            state.factionApplicationLastPoll = Date.now();
+            return state.factionApplicationInfo;
+        } catch (e) {
+            if (e.status === 401) throw e;
+            return state.factionApplicationInfo;
+        } finally {
+            state.factionApplicationLoading = false;
+        }
+    }
+
+    async function submitFactionApplication() {
+        if (state.factionApplicationBusy) return false;
+
+        const messageEl = document.getElementById('tt-faction-application-message');
+        const message = String(messageEl?.value || '').trim();
+
+        state.factionApplicationBusy = true;
+
+        try {
+            const result = await cloudRequest('POST', '/client/faction-application', { message });
+            state.factionApplicationLastPoll = 0;
+            await refreshFactionApplication(true);
+
+            if (result?.alreadyRegistered) {
+                alert('Your faction is already registered with the tracker.');
+            } else if (result?.alreadyPending && !result?.isApplicant) {
+                alert('Your faction already has an application awaiting review.');
+            } else if (result?.alreadyPending) {
+                alert('Your faction application is already awaiting review.');
+            } else if (result?.created) {
+                alert('Faction application submitted.');
+            }
+
+            if (state.panelVisible && state.panelMode === 'account') updatePanelContent();
+            return true;
+        } catch (e) {
+            alert('Faction application failed: ' + e.message);
+            return false;
+        } finally {
+            state.factionApplicationBusy = false;
+        }
+    }
+
+    async function replyFactionApplication() {
+        if (state.factionApplicationBusy) return false;
+
+        const application = state.factionApplicationInfo?.application;
+        const applicationId = String(application?.applicationId || '').trim();
+        const messageEl = document.getElementById('tt-faction-application-reply');
+        const message = String(messageEl?.value || '').trim();
+
+        if (!applicationId) return false;
+
+        if (!message) {
+            alert('Enter a reply first.');
+            messageEl?.focus();
+            return false;
+        }
+
+        state.factionApplicationBusy = true;
+
+        try {
+            await cloudRequest(
+                'POST',
+                '/client/faction-application/message',
+                { applicationId, message }
+            );
+
+            state.factionApplicationLastPoll = 0;
+            await refreshFactionApplication(true);
+
+            if (state.panelVisible && state.panelMode === 'account') updatePanelContent();
+            return true;
+        } catch (e) {
+            alert('Could not send reply: ' + e.message);
+            return false;
+        } finally {
+            state.factionApplicationBusy = false;
+        }
+    }
+
     async function refreshAdminRequests(force = false) {
         if (!isAdminUser()) return null;
         const now = Date.now();
         if (!force && state.adminLastPoll && now - state.adminLastPoll < ADMIN_POLL_INTERVAL) return state.adminRequests;
 
         try {
-            const result = await cloudRequest('GET', '/admin/access/requests');
+            const [result, factionApplications] = await Promise.all([
+                cloudRequest('GET', '/admin/access/requests'),
+                cloudRequest('GET', '/admin/faction-applications')
+            ]);
             state.adminRequests = result || { pendingCount: 0, approvedCount: 0, requests: [] };
+            state.adminFactionApplications = factionApplications || { pendingCount: 0, needsInfoCount: 0, applications: [] };
             state.adminLastPoll = now;
             state.adminError = null;
             return state.adminRequests;
@@ -948,13 +1108,15 @@
         if (state.panelVisible && state.panelMode === 'admin') updatePanelContent();
 
         try {
-            const [requests, users, factions] = await Promise.all([
+            const [requests, factionApplications, users, factions] = await Promise.all([
                 cloudRequest('GET', '/admin/access/requests'),
+                cloudRequest('GET', '/admin/faction-applications'),
                 cloudRequest('GET', '/admin/access/users'),
                 cloudRequest('GET', '/admin/access/factions')
             ]);
 
             state.adminRequests = requests || { pendingCount: 0, approvedCount: 0, requests: [] };
+            state.adminFactionApplications = factionApplications || { pendingCount: 0, needsInfoCount: 0, applications: [] };
             state.adminUsers = Array.isArray(users?.users) ? users.users : [];
             state.adminFactions = Array.isArray(factions?.factions) ? factions.factions : [];
             state.adminLastPoll = Date.now();
@@ -966,6 +1128,29 @@
         } finally {
             state.adminLoading = false;
             if (force && state.panelVisible && state.panelMode === 'admin') updatePanelContent();
+        }
+    }
+
+    async function loadAdminFactionApplicationDetail(applicationId) {
+        const id = String(applicationId || '').trim();
+        if (!id || !isAdminUser()) return null;
+        if (state.adminFactionApplicationLoading) return state.adminFactionApplicationDetail;
+
+        state.adminFactionApplicationLoading = true;
+
+        try {
+            const detail = await cloudRequest(
+                'GET',
+                '/admin/faction-applications/' + encodeURIComponent(id)
+            );
+            state.adminFactionApplicationDetail = detail || null;
+            state.adminError = null;
+            return state.adminFactionApplicationDetail;
+        } catch (e) {
+            state.adminError = e.message;
+            return null;
+        } finally {
+            state.adminFactionApplicationLoading = false;
         }
     }
 
@@ -1258,6 +1443,9 @@
 
             try {
                 await refreshAccessStatus(false);
+                if (state.panelVisible && state.panelMode === 'account') {
+                    await refreshFactionApplication(false);
+                }
                 if (isAdminUser()) await refreshAdminRequests(false);
             } catch (e) {}
 
@@ -1495,7 +1683,7 @@
         }
     }
 
-    // ==================== DESKTOP GUTTER LAYOUT ====================
+    // ==================== RESPONSIVE PANEL LAYOUT ====================
     const TT_DESKTOP_GUTTER_MIN_WIDTH = 300;
     const TT_DESKTOP_PANEL_MAX_WIDTH = 440;
     const TT_DESKTOP_EDGE_GAP = 8;
@@ -1503,26 +1691,62 @@
     let ttLayoutWatchersInstalled = false;
     let ttSidebarResizeObserver = null;
 
-    function getTrackerDesktopGutterLayout() {
-        const sidebar = document.getElementById('sidebarroot');
-        if (!sidebar || window.innerWidth < 900) return null;
+    function isTrackerMobileDevice() {
+        try {
+            if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
+                return navigator.userAgentData.mobile;
+            }
+        } catch (e) {}
 
-        const rect = sidebar.getBoundingClientRect();
-        const sidebarLeft = Math.round(rect.left);
-        const usableWidth = sidebarLeft - TT_DESKTOP_EDGE_GAP - TT_DESKTOP_SIDEBAR_GAP;
+        const ua = String(navigator.userAgent || '');
+        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) return true;
 
-        if (!Number.isFinite(sidebarLeft) || usableWidth < TT_DESKTOP_GUTTER_MIN_WIDTH) return null;
+        // iPadOS can identify itself as Macintosh while still being a touch-only tablet.
+        if (/Macintosh/i.test(ua) && Number(navigator.maxTouchPoints || 0) > 1) return true;
 
-        const width = Math.min(TT_DESKTOP_PANEL_MAX_WIDTH, usableWidth);
-        const left = Math.max(
-            TT_DESKTOP_EDGE_GAP,
-            sidebarLeft - TT_DESKTOP_SIDEBAR_GAP - width
+        return false;
+    }
+
+    function getTrackerDesktopPanelLayout() {
+        if (isTrackerMobileDevice()) return null;
+
+        const viewportWidth = Math.max(
+            0,
+            Number(window.innerWidth || 0),
+            Number(document.documentElement?.clientWidth || 0)
         );
+        const sidebar = document.getElementById('sidebarroot');
 
+        if (sidebar) {
+            const rect = sidebar.getBoundingClientRect();
+            const sidebarLeft = Math.round(rect.left);
+            const usableWidth = sidebarLeft - TT_DESKTOP_EDGE_GAP - TT_DESKTOP_SIDEBAR_GAP;
+
+            if (Number.isFinite(sidebarLeft) && usableWidth >= TT_DESKTOP_GUTTER_MIN_WIDTH) {
+                const width = Math.min(TT_DESKTOP_PANEL_MAX_WIDTH, usableWidth);
+                const left = Math.max(
+                    TT_DESKTOP_EDGE_GAP,
+                    sidebarLeft - TT_DESKTOP_SIDEBAR_GAP - width
+                );
+
+                return {
+                    mode: 'desktop-gutter',
+                    left,
+                    width,
+                    sidebarLeft,
+                    top: TT_DESKTOP_EDGE_GAP,
+                    bottom: TT_DESKTOP_EDGE_GAP
+                };
+            }
+        }
+
+        // Desktop fallback: never become a bottom sheet. Stay as a compact
+        // vertical panel pinned to the left edge, overlaying Torn if needed.
         return {
-            left,
-            width,
-            sidebarLeft,
+            mode: 'desktop-left',
+            left: TT_DESKTOP_EDGE_GAP,
+            width: Math.max(1, Math.min(TT_DESKTOP_PANEL_MAX_WIDTH, viewportWidth - (TT_DESKTOP_EDGE_GAP * 2))),
+            sidebarLeft: null,
             top: TT_DESKTOP_EDGE_GAP,
             bottom: TT_DESKTOP_EDGE_GAP
         };
@@ -1532,16 +1756,16 @@
         const icon = document.getElementById('travel-float-icon');
         if (!icon) return;
 
-        const desktop = getTrackerDesktopGutterLayout();
+        const desktop = getTrackerDesktopPanelLayout();
         icon.style.right = 'auto';
         icon.style.left = desktop ? `${Math.round(desktop.left + 8)}px` : '6px';
         icon.style.bottom = desktop ? '20px' : '45px';
     }
 
-    function syncTrackerPanelOverlay(useDesktopGutter) {
+    function syncTrackerPanelOverlay(useDesktopVertical) {
         let overlay = document.getElementById('travel-panel-overlay');
 
-        if (useDesktopGutter) {
+        if (useDesktopVertical) {
             overlay?.remove();
             return;
         }
@@ -1558,9 +1782,9 @@
     function applyTrackerPanelLayout(panel, opening = false) {
         if (!panel) return false;
 
-        const desktop = getTrackerDesktopGutterLayout();
-        const useDesktopGutter = !!desktop;
-        panel.dataset.ttLayout = useDesktopGutter ? 'desktop-gutter' : 'mobile-sheet';
+        const desktop = getTrackerDesktopPanelLayout();
+        const useDesktopVertical = !!desktop;
+        panel.dataset.ttLayout = desktop?.mode || 'mobile-sheet';
 
         Object.assign(panel.style, {
             position: 'fixed',
@@ -1581,7 +1805,7 @@
             transition: 'transform var(--tt-transition-med), opacity var(--tt-transition-fast)'
         });
 
-        if (useDesktopGutter) {
+        if (useDesktopVertical) {
             Object.assign(panel.style, {
                 left: `${Math.round(desktop.left)}px`,
                 right: 'auto',
@@ -1613,8 +1837,8 @@
             });
         }
 
-        syncTrackerPanelOverlay(useDesktopGutter);
-        return useDesktopGutter;
+        syncTrackerPanelOverlay(useDesktopVertical);
+        return useDesktopVertical;
     }
 
     function syncTrackerDesktopLayout() {
@@ -1898,7 +2122,7 @@
       .tt-pending-line:last-child { border-bottom:0; }
 
 
-      /* v18.2.6 - admin-matched universal onboarding */
+      /* v18.4.1 - admin-matched universal onboarding + Global Pool state */
       #travel-panel .tt-onboard-shell,
       #travel-panel .tt-onboard-shell * { box-sizing:border-box; }
       #travel-panel .tt-onboard-shell { min-height:100%;display:flex;flex-direction:column;text-align:left;color:#F5F5F5 !important;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif !important;font-size:12px !important;line-height:1.35 !important; }
@@ -1961,7 +2185,7 @@
         #travel-panel button.tt-onboard-link-btn { width:100% !important; }
       }
 
-      .tt-admin-tabs { display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:3px;margin-top:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:8px; }
+      .tt-admin-tabs { display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:3px;margin-top:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:8px; }
       .tt-admin-tab { position:relative;border:0;border-radius:5px;padding:8px 5px;background:transparent;color:var(--tt-text-soft);font-size:10px;font-weight:900;letter-spacing:0.04em;cursor:pointer; }
       .tt-admin-tab.active { background:rgba(255,255,255,0.11);color:#fff; }
       .tt-admin-card { background:var(--tt-bg-card);border:1px solid var(--tt-border-subtle);border-radius:10px;padding:11px 12px;margin-bottom:8px;box-shadow:var(--tt-shadow-soft); }
@@ -1982,6 +2206,28 @@
       .tt-admin-section-head { display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px; }
       .tt-admin-section-title { font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:0.05em;color:var(--tt-text-muted); }
 
+      .tt-account-entry { border:1px solid rgba(33,150,243,0.45);background:rgba(33,150,243,0.10);color:#BBDEFB;border-radius:6px;padding:7px 9px;font-size:10px;font-weight:900;letter-spacing:0.04em;cursor:pointer;touch-action:manipulation; }
+      .tt-account-entry:active { opacity:0.65; }
+      .tt-account-card { background:var(--tt-bg-card);border:1px solid var(--tt-border-subtle);border-radius:10px;padding:12px;margin-bottom:10px;box-shadow:var(--tt-shadow-soft); }
+      .tt-account-title { font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:0.05em;color:var(--tt-text-muted);margin-bottom:8px; }
+      .tt-account-row { min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:10px; }
+      .tt-account-row:last-child { border-bottom:0; }
+      .tt-account-row span { color:var(--tt-text-soft); }
+      .tt-account-row strong { color:#fff;text-align:right;max-width:65%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+      .tt-app-copy { font-size:11px;line-height:1.45;color:var(--tt-text-muted); }
+      .tt-app-textarea { width:100%;min-height:92px;resize:vertical;box-sizing:border-box;margin-top:9px;padding:10px 11px;border:1px solid rgba(255,255,255,0.16);border-radius:7px;background:rgba(0,0,0,0.32);color:#fff;font:inherit;font-size:11px;line-height:1.4;outline:none; }
+      .tt-app-textarea:focus { border-color:rgba(33,150,243,0.7);box-shadow:0 0 0 2px rgba(33,150,243,0.12); }
+      .tt-app-thread { margin-top:10px;border-top:1px solid rgba(255,255,255,0.07);padding-top:8px; }
+      .tt-app-message { margin:0 0 7px;padding:8px 9px;border:1px solid rgba(255,255,255,0.08);border-radius:7px;background:rgba(255,255,255,0.035); }
+      .tt-app-message--admin { border-color:rgba(33,150,243,0.28);background:rgba(33,150,243,0.07); }
+      .tt-app-message-head { display:flex;justify-content:space-between;gap:8px;margin-bottom:3px;font-size:9px;font-weight:900;color:var(--tt-text-soft);text-transform:uppercase;letter-spacing:0.04em; }
+      .tt-app-message-body { color:#E8E8E8;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word; }
+      .tt-app-status { display:inline-flex;align-items:center;padding:3px 7px;border-radius:5px;font-size:9px;font-weight:900;text-transform:uppercase; }
+      .tt-app-status--pending { background:rgba(255,179,0,0.14);border:1px solid rgba(255,179,0,0.5);color:#FFE082; }
+      .tt-app-status--needs_info { background:rgba(33,150,243,0.14);border:1px solid rgba(33,150,243,0.5);color:#BBDEFB; }
+      .tt-app-status--approved { background:rgba(76,175,80,0.14);border:1px solid rgba(76,175,80,0.5);color:#C8E6C9; }
+      .tt-app-status--declined { background:rgba(239,83,80,0.14);border:1px solid rgba(239,83,80,0.5);color:#FFCDD2; }
+
       @media (max-width:600px) {
         .tt-abroad-person { grid-template-columns:1fr;gap:3px;padding:7px 0; }
         .tt-abroad-meta { text-align:left;padding-left:0; }
@@ -1992,9 +2238,26 @@
         document.head.appendChild(style);
     }
 
+    function renderAccountEntryButton() {
+        return '<button id="tt-account-entry" class="tt-account-entry">ACCOUNT</button>';
+    }
+
+    function bindAccountEntryButton() {
+        document.getElementById('tt-account-entry')?.addEventListener('click', async e => {
+            e.stopPropagation();
+            state.panelMode = 'account';
+            state.selectedFactionId = null;
+            updatePanelContent();
+            await refreshFactionApplication(true);
+            if (state.panelVisible && state.panelMode === 'account') updatePanelContent();
+        });
+    }
+
     function renderAdminEntryButton() {
         if (!isAdminUser()) return '';
-        const count = Number(state.adminRequests?.pendingCount || 0);
+        const count =
+            Number(state.adminRequests?.pendingCount || 0) +
+            Number(state.adminFactionApplications?.pendingCount || 0);
         return `<button id="tt-admin-entry" class="tt-admin-entry ${count > 0 ? 'tt-admin-entry--attention' : ''}">ADMIN${count > 0 ? `<span class="tt-admin-badge">${count > 99 ? '99+' : count}</span>` : ''}</button>`;
     }
 
@@ -2003,6 +2266,7 @@
             e.stopPropagation();
             state.panelMode = 'admin';
             state.selectedFactionId = null;
+            state.adminFactionApplicationDetail = null;
             updatePanelContent();
             await loadAdminPanelData(true);
         });
@@ -2063,6 +2327,120 @@
         document.getElementById('tt-request-personal')?.addEventListener('click', requestPersonalAccess);
         document.getElementById('tt-activate-approved')?.addEventListener('click', activateApprovedPersonalAccess);
         document.getElementById('tt-enter-personal-code')?.addEventListener('click', activatePersonalAccessCode);
+    }
+
+    function renderFactionApplicationMessages(messages = []) {
+        if (!Array.isArray(messages) || !messages.length) {
+            return '<div class="tt-app-copy" style="margin-top:8px;">No messages yet.</div>';
+        }
+
+        return `<div class="tt-app-thread">${messages.map(message => {
+            const senderType = String(message.senderType || 'user').toLowerCase();
+            const label = senderType === 'admin' ? 'Tracker Admin' : 'You';
+            return `<div class="tt-app-message ${senderType === 'admin' ? 'tt-app-message--admin' : ''}">
+              <div class="tt-app-message-head"><span>${label}</span><span>${formatAdminAge(message.createdAt)} ago</span></div>
+              <div class="tt-app-message-body">${escapeHtml(message.message || '')}</div>
+            </div>`;
+        }).join('')}</div>`;
+    }
+
+    function renderAccountPanel() {
+        const access = state.accessInfo || {};
+        const factionInfo = state.factionApplicationInfo;
+        const currentFaction = factionInfo?.currentFaction || null;
+        const application = factionInfo?.application || null;
+        const accessType = String(access.accessType || 'legacy').toUpperCase();
+        const accessStatus = String(access.accessStatus || 'active').toUpperCase();
+        const userName = access.tornName || state.trackerLabel || 'Torn user';
+        const tornUserId = access.tornUserId || state.myUserID || null;
+        const factionName =
+            currentFaction?.factionName ||
+            state.myFactionName ||
+            (currentFaction?.factionId ? 'Faction ' + currentFaction.factionId : 'No faction');
+
+        let factionBody = '';
+
+        if (state.factionApplicationLoading && !factionInfo) {
+            factionBody = '<div class="tt-admin-empty">Checking faction registration...</div>';
+        } else if (!factionInfo) {
+            factionBody = `<div class="tt-admin-empty">Faction registration status is unavailable.<div class="tt-admin-card-actions" style="justify-content:center;"><button id="tt-faction-application-refresh" class="tt-admin-action">TRY AGAIN</button></div></div>`;
+        } else if (!currentFaction?.factionId) {
+            factionBody = '<div class="tt-app-copy">You are not currently showing as a member of a Torn faction. Faction registration becomes available when you are in a faction.</div>';
+        } else if (factionInfo.registered === true) {
+            factionBody = `<div class="tt-row"><div><div style="font-size:13px;font-weight:800;color:#fff;">${escapeHtml(factionName)}</div><div class="tt-admin-card-sub">Faction ${escapeHtml(currentFaction.factionId)}</div></div><span class="tt-app-status tt-app-status--approved">REGISTERED</span></div>
+              <div class="tt-app-copy" style="margin-top:9px;">This faction is registered with the tracker. Members can receive automatic faction access when they connect their own Torn API key.</div>`;
+
+            if (application?.isApplicant) {
+                factionBody += `<div class="tt-admin-section-title" style="margin:12px 0 6px;">Your application</div>`;
+                factionBody += renderFactionApplicationMessages(factionInfo.messages || []);
+            }
+        } else {
+            if (application) {
+                const status = String(application.status || 'pending').toLowerCase();
+                const open = status === 'pending' || status === 'needs_info';
+                const applicantName = application.applicant?.tornName || 'another faction member';
+
+                factionBody += `<div class="tt-row"><div><div style="font-size:13px;font-weight:800;color:#fff;">${escapeHtml(application.factionName || factionName)}</div><div class="tt-admin-card-sub">Faction ${escapeHtml(application.factionId || currentFaction.factionId)}</div></div><span class="tt-app-status tt-app-status--${escapeHtml(status)}">${escapeHtml(status.replace('_', ' '))}</span></div>`;
+
+                if (application.isApplicant) {
+                    factionBody += `<div class="tt-app-copy" style="margin-top:9px;">You submitted this faction application. Admin messages and updates appear below.</div>`;
+                    factionBody += renderFactionApplicationMessages(factionInfo.messages || []);
+
+                    if (open) {
+                        factionBody += `<textarea id="tt-faction-application-reply" class="tt-app-textarea" maxlength="4000" placeholder="${status === 'needs_info' ? 'Reply with the information requested...' : 'Send a message to the tracker admin...'}"></textarea>
+                          <div class="tt-admin-card-actions"><button id="tt-faction-application-reply-btn" class="tt-admin-action tt-admin-action--good">SEND REPLY</button><button id="tt-faction-application-refresh" class="tt-admin-action">REFRESH</button></div>`;
+                    }
+                } else if (open) {
+                    factionBody += `<div class="tt-app-copy" style="margin-top:9px;">An application for this faction is already open, submitted by <strong style="color:#fff;">${escapeHtml(applicantName)}</strong>. Another application is not required.</div>`;
+                } else {
+                    factionBody += `<div class="tt-app-copy" style="margin-top:9px;">The most recent faction application is ${escapeHtml(status.replace('_', ' '))}.</div>`;
+                }
+            }
+
+            if (factionInfo.canApply === true) {
+                factionBody += `<div style="${application ? 'margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.07);' : ''}">
+                  <div style="font-size:12px;font-weight:800;color:#fff;">Apply to register ${escapeHtml(factionName)}</div>
+                  <div class="tt-app-copy" style="margin-top:5px;">Registering a faction lets its members receive automatic faction access after they connect their own Torn API key. Applications require admin approval.</div>
+                  <textarea id="tt-faction-application-message" class="tt-app-textarea" maxlength="4000" placeholder="Optional message for the tracker admin..."></textarea>
+                  <div class="tt-admin-card-actions"><button id="tt-faction-application-submit" class="tt-admin-action tt-admin-action--good">APPLY TO REGISTER FACTION</button><button id="tt-faction-application-refresh" class="tt-admin-action">REFRESH</button></div>
+                </div>`;
+            } else if (!application) {
+                factionBody += '<div class="tt-app-copy">Faction registration is not currently available for this account.</div>';
+            }
+        }
+
+        return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
+          <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#128100;</span><div><div style="font-size:16px;font-weight:800;">Account & Access</div><div style="font-size:11px;color:var(--tt-text-soft);">Tracker identity and faction registration</div></div></div><div style="display:flex;align-items:center;gap:7px;"><button id="tt-account-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
+        </div>
+        <div class="tt-account-card">
+          <div class="tt-account-title">Your Access</div>
+          <div class="tt-account-row"><span>User</span><strong>${escapeHtml(userName)}</strong></div>
+          ${tornUserId ? `<div class="tt-account-row"><span>Torn ID</span><strong>${escapeHtml(tornUserId)}</strong></div>` : ''}
+          <div class="tt-account-row"><span>Access</span><strong>${escapeHtml(accessType)}</strong></div>
+          <div class="tt-account-row"><span>Status</span><strong>${escapeHtml(accessStatus)}</strong></div>
+          <div class="tt-account-row"><span>Current faction</span><strong>${escapeHtml(factionName)}</strong></div>
+        </div>
+        <div class="tt-account-card">
+          <div class="tt-account-title">Faction Registration</div>
+          ${factionBody}
+        </div>
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.1</span></div></div>`;
+    }
+
+    function bindAccountPanel(panel) {
+        document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
+        document.getElementById('tt-account-back')?.addEventListener('click', () => {
+            state.panelMode = 'factions';
+            updatePanelContent();
+        });
+
+        document.getElementById('tt-faction-application-refresh')?.addEventListener('click', async () => {
+            await refreshFactionApplication(true);
+            if (state.panelVisible && state.panelMode === 'account') updatePanelContent();
+        });
+
+        document.getElementById('tt-faction-application-submit')?.addEventListener('click', submitFactionApplication);
+        document.getElementById('tt-faction-application-reply-btn')?.addEventListener('click', replyFactionApplication);
     }
 
     function formatAdminAge(timestamp) {
@@ -2131,7 +2509,7 @@
               <div class="tt-admin-card-actions">
                 ${u.canSendPersonal && !u.personalAccessReady ? `<button class="tt-admin-action tt-admin-action--good" data-admin-personal="${escapeHtml(u.clientId)}">SEND PERSONAL ACCESS</button>` : ''}
                 ${u.personalAccessReady ? '<span class="tt-admin-status tt-admin-status--personal">APPROVED</span>' : ''}
-                ${canManage ? `<button class="tt-admin-action ${u.accountActive ? 'tt-admin-action--danger' : 'tt-admin-action--good'}" data-admin-user-status="${escapeHtml(u.clientId)}" data-active="${u.accountActive ? '0' : '1'}">${u.accountActive ? 'DISABLE' : 'ENABLE'}</button>` : ''}
+                ${canManage ? `<button class="tt-admin-action ${u.accountActive ? 'tt-admin-action--danger' : 'tt-admin-action--good'}" data-admin-user-status="${escapeHtml(u.clientId)}" data-active="${u.accountActive ? '0' : '1'}">${u.accountActive ? 'DISABLE ACCOUNT' : 'ENABLE ACCOUNT'}</button>` : ''}
               </div>
             </div>`;
         }
@@ -2150,30 +2528,118 @@
               <div class="tt-admin-card-actions">
                 ${!f.isPrimary && f.accessCode ? `<button class="tt-admin-action" data-admin-copy-code="${escapeHtml(f.accessCode)}">COPY CODE</button>` : ''}
                 ${!f.isPrimary ? `<button class="tt-admin-action tt-admin-action--warn" data-admin-regenerate="${escapeHtml(f.factionId)}">REGENERATE</button>` : ''}
-                ${!f.isPrimary ? `<button class="tt-admin-action ${f.active ? 'tt-admin-action--danger' : 'tt-admin-action--good'}" data-admin-faction-status="${escapeHtml(f.factionId)}" data-active="${f.active ? '0' : '1'}">${f.active ? 'DISABLE' : 'ENABLE'}</button>` : ''}
+                ${!f.isPrimary ? `<button class="tt-admin-action ${f.active ? 'tt-admin-action--danger' : 'tt-admin-action--good'}" data-admin-faction-status="${escapeHtml(f.factionId)}" data-active="${f.active ? '0' : '1'}">${f.active ? 'DISABLE FACTION' : 'ENABLE FACTION'}</button>` : ''}
               </div>
             </div>`;
         }
         return html;
     }
 
+    function renderAdminFactionApplicationsSection() {
+        const detail = state.adminFactionApplicationDetail?.application || null;
+        const detailMessages = state.adminFactionApplicationDetail?.messages || [];
+
+        if (detail) {
+            const status = String(detail.status || 'pending').toLowerCase();
+            const open = status === 'pending' || status === 'needs_info';
+            const applicant = detail.applicant || {};
+            const currentFactionMismatch =
+                applicant.currentFactionId &&
+                String(applicant.currentFactionId) !== String(detail.factionId);
+
+            let html = `<div class="tt-admin-section-head"><div><button class="tt-admin-action" id="tt-admin-faction-app-back">&#8592; APPLICATIONS</button></div><button class="tt-admin-action" id="tt-admin-refresh">REFRESH</button></div>
+              <div class="tt-admin-card ${status === 'pending' ? 'tt-admin-card--attention' : ''}">
+                <div class="tt-row"><div style="min-width:0;"><div class="tt-admin-card-title">${escapeHtml(detail.factionName || ('Faction ' + detail.factionId))}</div><div class="tt-admin-card-sub">Faction ${escapeHtml(detail.factionId)} - submitted ${formatAdminAge(detail.createdAt)} ago</div></div><span class="tt-app-status tt-app-status--${escapeHtml(status)}">${escapeHtml(status.replace('_', ' '))}</span></div>
+                <div class="tt-admin-card-sub" style="margin-top:8px;">Applicant: ${applicant.profileUrl ? `<a class="tt-support-admin-link" href="${escapeHtml(applicant.profileUrl)}" target="_blank">${escapeHtml(applicant.tornName || 'Unknown User')}</a>` : escapeHtml(applicant.tornName || 'Unknown User')} ${applicant.tornUserId ? `[${escapeHtml(applicant.tornUserId)}]` : ''}<br>Access: ${escapeHtml(String(applicant.accessType || '-').toUpperCase())} / ${escapeHtml(String(applicant.accessStatus || '-').toUpperCase())}${currentFactionMismatch ? `<br><strong style="color:#FFCDD2;">Current faction is now ${escapeHtml(applicant.currentFactionId)}.</strong>` : ''}</div>
+              </div>`;
+
+            html += '<div class="tt-admin-section-title" style="margin:12px 0 8px;">Conversation</div>';
+
+            if (!detailMessages.length) {
+                html += '<div class="tt-admin-empty">No messages yet.</div>';
+            } else {
+                html += `<div class="tt-app-thread">${detailMessages.map(message => {
+                    const senderType = String(message.senderType || 'user').toLowerCase();
+                    const senderName = senderType === 'admin'
+                        ? (message.senderTornName || 'Tracker Admin')
+                        : (message.senderTornName || detail.applicant?.tornName || 'Applicant');
+
+                    return `<div class="tt-app-message ${senderType === 'admin' ? 'tt-app-message--admin' : ''}">
+                      <div class="tt-app-message-head"><span>${escapeHtml(senderName)} - ${escapeHtml(senderType)}</span><span>${formatAdminAge(message.createdAt)} ago</span></div>
+                      <div class="tt-app-message-body">${escapeHtml(message.message || '')}</div>
+                    </div>`;
+                }).join('')}</div>`;
+            }
+
+            if (open) {
+                html += `<textarea id="tt-admin-faction-app-message" class="tt-app-textarea" maxlength="4000" placeholder="Message to the applicant..."></textarea>
+                  <div class="tt-admin-card-actions">
+                    <button id="tt-admin-faction-app-send" class="tt-admin-action">SEND MESSAGE</button>
+                    <button id="tt-admin-faction-app-info" class="tt-admin-action tt-admin-action--warn">REQUEST INFO</button>
+                    <button id="tt-admin-faction-app-approve" class="tt-admin-action tt-admin-action--good">APPROVE FACTION</button>
+                    <button id="tt-admin-faction-app-decline" class="tt-admin-action tt-admin-action--danger">DECLINE</button>
+                  </div>`;
+            }
+
+            return html;
+        }
+
+        const applications = Array.isArray(state.adminFactionApplications?.applications)
+            ? state.adminFactionApplications.applications
+            : [];
+        const open = applications.filter(item => item.status === 'pending' || item.status === 'needs_info');
+        const recent = applications.filter(item => item.status !== 'pending' && item.status !== 'needs_info').slice(0, 15);
+
+        let html = `<div class="tt-admin-section-head"><div class="tt-admin-section-title">Faction Applications (${open.length})</div><button class="tt-admin-action" id="tt-admin-refresh">REFRESH</button></div>`;
+
+        if (!open.length) html += '<div class="tt-admin-empty">No open faction applications.</div>';
+
+        for (const app of open) {
+            const status = String(app.status || 'pending').toLowerCase();
+            html += `<div class="tt-admin-card ${status === 'pending' ? 'tt-admin-card--attention' : ''}">
+              <div class="tt-row"><div style="min-width:0;"><div class="tt-admin-card-title">${escapeHtml(app.factionName || ('Faction ' + app.factionId))}</div><div class="tt-admin-card-sub">[${escapeHtml(app.factionId)}] - ${escapeHtml(app.applicantTornName || 'Unknown applicant')} - updated ${formatAdminAge(app.updatedAt)} ago - ${Number(app.messageCount || 0)} message${Number(app.messageCount || 0) === 1 ? '' : 's'}</div></div><span class="tt-app-status tt-app-status--${escapeHtml(status)}">${escapeHtml(status.replace('_', ' '))}</span></div>
+              <div class="tt-admin-card-actions"><button class="tt-admin-action tt-admin-action--good" data-admin-faction-app-open="${escapeHtml(app.applicationId)}">OPEN</button></div>
+            </div>`;
+        }
+
+        if (recent.length) {
+            html += '<div class="tt-admin-section-title" style="margin:14px 0 8px;">Recent</div>';
+            for (const app of recent) {
+                const status = String(app.status || '').toLowerCase();
+                html += `<div class="tt-admin-card"><div class="tt-row"><div style="min-width:0;"><div class="tt-admin-card-title">${escapeHtml(app.factionName || ('Faction ' + app.factionId))}</div><div class="tt-admin-card-sub">${escapeHtml(app.applicantTornName || 'Unknown applicant')} - ${formatAdminAge(app.updatedAt)} ago</div></div><span class="tt-app-status tt-app-status--${escapeHtml(status)}">${escapeHtml(status.replace('_', ' '))}</span></div><div class="tt-admin-card-actions"><button class="tt-admin-action" data-admin-faction-app-open="${escapeHtml(app.applicationId)}">VIEW</button></div></div>`;
+            }
+        }
+
+        return html;
+    }
+
     function renderAdminPanel() {
         const pending = Number(state.adminRequests?.pendingCount || 0);
+        const factionPending = Number(state.adminFactionApplications?.pendingCount || 0);
         let body = '';
         if (state.adminLoading && !state.adminUsers.length && !state.adminFactions.length) body = '<div class="tt-admin-empty">Loading admin data...</div>';
         else if (state.adminError) body = `<div class="tt-admin-empty">Admin data error: ${escapeHtml(state.adminError)}</div>`;
+        else if (state.adminSection === 'applications') body = renderAdminFactionApplicationsSection();
         else if (state.adminSection === 'users') body = renderAdminUsersSection();
         else if (state.adminSection === 'factions') body = renderAdminFactionsSection();
         else body = renderAdminRequestsSection();
 
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;"><button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
-          <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.2.6</span></div></div>`;
+          <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.1</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
+        const openApplicationId =
+            state.adminFactionApplicationDetail?.application?.applicationId || null;
+
         await loadAdminPanelData(false);
+
+        if (openApplicationId && state.adminSection === 'applications') {
+            await loadAdminFactionApplicationDetail(openApplicationId);
+        }
+
         if (state.panelVisible && state.panelMode === 'admin') updatePanelContent();
     }
 
@@ -2187,11 +2653,88 @@
         panel.querySelectorAll('[data-admin-section]').forEach(btn => {
             btn.addEventListener('click', () => {
                 state.adminSection = btn.dataset.adminSection || 'requests';
+                if (state.adminSection !== 'applications') state.adminFactionApplicationDetail = null;
                 updatePanelContent();
             });
         });
 
         document.getElementById('tt-admin-refresh')?.addEventListener('click', adminRefreshAndRender);
+
+        panel.querySelectorAll('[data-admin-faction-app-open]').forEach(btn => btn.addEventListener('click', async () => {
+            const applicationId = String(btn.dataset.adminFactionAppOpen || '').trim();
+            if (!applicationId) return;
+            state.adminSection = 'applications';
+            state.adminFactionApplicationDetail = null;
+            updatePanelContent();
+            await loadAdminFactionApplicationDetail(applicationId);
+            if (state.panelVisible && state.panelMode === 'admin') updatePanelContent();
+        }));
+
+        document.getElementById('tt-admin-faction-app-back')?.addEventListener('click', () => {
+            state.adminFactionApplicationDetail = null;
+            updatePanelContent();
+        });
+
+        document.getElementById('tt-admin-faction-app-send')?.addEventListener('click', async () => {
+            const applicationId = state.adminFactionApplicationDetail?.application?.applicationId;
+            const messageEl = document.getElementById('tt-admin-faction-app-message');
+            const message = String(messageEl?.value || '').trim();
+            if (!applicationId || !message) {
+                alert('Enter a message first.');
+                return;
+            }
+            try {
+                await cloudRequest('POST', '/admin/faction-applications/' + encodeURIComponent(applicationId) + '/message', { message });
+                await loadAdminFactionApplicationDetail(applicationId);
+                if (state.panelVisible && state.panelMode === 'admin') updatePanelContent();
+            } catch (e) {
+                alert('Message failed: ' + e.message);
+            }
+        });
+
+        document.getElementById('tt-admin-faction-app-info')?.addEventListener('click', async () => {
+            const applicationId = state.adminFactionApplicationDetail?.application?.applicationId;
+            const messageEl = document.getElementById('tt-admin-faction-app-message');
+            const message = String(messageEl?.value || '').trim();
+            if (!applicationId || !message) {
+                alert('Enter what information you need from the applicant first.');
+                return;
+            }
+            try {
+                await cloudRequest('POST', '/admin/faction-applications/' + encodeURIComponent(applicationId) + '/request-info', { message });
+                await adminRefreshAndRender();
+            } catch (e) {
+                alert('Request info failed: ' + e.message);
+            }
+        });
+
+        document.getElementById('tt-admin-faction-app-approve')?.addEventListener('click', async () => {
+            const applicationId = state.adminFactionApplicationDetail?.application?.applicationId;
+            const message = String(document.getElementById('tt-admin-faction-app-message')?.value || '').trim();
+            if (!applicationId) return;
+            if (!confirm('Approve and register this faction?')) return;
+            try {
+                await cloudRequest('POST', '/admin/faction-applications/' + encodeURIComponent(applicationId) + '/approve', { message });
+                state.adminFactionApplicationDetail = null;
+                await adminRefreshAndRender();
+            } catch (e) {
+                alert('Faction approval failed: ' + e.message);
+            }
+        });
+
+        document.getElementById('tt-admin-faction-app-decline')?.addEventListener('click', async () => {
+            const applicationId = state.adminFactionApplicationDetail?.application?.applicationId;
+            const message = String(document.getElementById('tt-admin-faction-app-message')?.value || '').trim();
+            if (!applicationId) return;
+            if (!confirm('Decline this faction application?')) return;
+            try {
+                await cloudRequest('POST', '/admin/faction-applications/' + encodeURIComponent(applicationId) + '/decline', { message });
+                state.adminFactionApplicationDetail = null;
+                await adminRefreshAndRender();
+            } catch (e) {
+                alert('Faction decline failed: ' + e.message);
+            }
+        });
 
         panel.querySelectorAll('[data-admin-approve]').forEach(btn => btn.addEventListener('click', async () => {
             if (!confirm('Send Personal Access to this user?')) return;
@@ -2271,7 +2814,12 @@
 
     // ==================== PANEL ====================
     function createPanel(mode = 'factions') {
-        const nextMode = mode === 'individuals' ? 'individuals' : (mode === 'admin' && isAdminUser() ? 'admin' : 'factions');
+        const nextMode =
+            mode === 'individuals'
+                ? 'individuals'
+                : mode === 'account'
+                    ? 'account'
+                    : (mode === 'admin' && isAdminUser() ? 'admin' : 'factions');
         const existing = document.getElementById('travel-panel');
 
         if (existing) {
@@ -2297,7 +2845,7 @@
         document.body.appendChild(panel);
 
         requestAnimationFrame(() => {
-            const desktop = panel.dataset.ttLayout === 'desktop-gutter';
+            const desktop = panel.dataset.ttLayout !== 'mobile-sheet';
             panel.style.transform = desktop ? 'translateX(0)' : 'translateY(0)';
             panel.style.opacity = '1';
         });
@@ -2312,7 +2860,7 @@
 
         if (!panel) return;
 
-        const desktop = panel.dataset.ttLayout === 'desktop-gutter';
+        const desktop = panel.dataset.ttLayout !== 'mobile-sheet';
         panel.style.transform = desktop ? 'translateX(-18px)' : 'translateY(100%)';
         if (desktop) panel.style.opacity = '0';
 
@@ -2355,6 +2903,11 @@
 
             if (phase === 'traveling' && now >= earliest) phaseChanged = true;
             if (phase === 'landing-countdown' && Number.isFinite(latest) && now >= latest) phaseChanged = true;
+        });
+
+        document.querySelectorAll('#travel-panel .tt-member-card[data-landed-until]').forEach(card => {
+            const landedUntil = Number(card.dataset.landedUntil);
+            if (Number.isFinite(landedUntil) && now >= landedUntil) phaseChanged = true;
         });
 
         if (phaseChanged) {
@@ -2455,28 +3008,32 @@
     }
 
     function getAbroadCountry(member) {
-        if (!member) return null;
+        const m = getMemberDisplayState(member);
 
-        if (member.status === 'abroad') {
-            return member.lookupDest || member.origin || null;
+        if (!m) return null;
+
+        if (m.status === 'abroad') {
+            return m.lookupDest || m.destination || m.origin || null;
         }
 
-        if (member.status === 'landed' && member.destination && member.destination !== 'Torn') {
-            return member.destination;
+        if (m.status === 'landed' && m.destination && m.destination !== 'Torn') {
+            return m.destination;
         }
 
-        if (member.status === 'traveling' && member.destination && member.destination !== 'Torn') {
-            return member.destination;
+        if (m.status === 'traveling' && m.destination && m.destination !== 'Torn') {
+            return m.destination;
         }
 
         return null;
     }
 
     function getAbroadPosition(member) {
-        if (!member) return null;
-        if (member.status === 'abroad') return 'present';
-        if (member.status === 'landed' && member.destination && member.destination !== 'Torn') return 'present';
-        if (member.status === 'traveling' && member.destination !== 'Torn') return 'inbound';
+        const m = getMemberDisplayState(member);
+
+        if (!m) return null;
+        if (m.status === 'abroad') return 'present';
+        if (m.status === 'landed' && m.destination && m.destination !== 'Torn') return 'present';
+        if (m.status === 'traveling' && m.destination !== 'Torn') return 'inbound';
 
         return null;
     }
@@ -2924,7 +3481,7 @@
 
         for (const fid in state.watchedFactions) {
             const faction = state.watchedFactions[fid];
-            const me = faction?.members?.[myId];
+            const me = getMemberDisplayState(faction?.members?.[myId] ? { ...faction.members[myId], xid: myId } : null);
 
             if (!me) continue;
 
@@ -2990,7 +3547,7 @@
             if (!faction) continue;
 
             for (const xid in faction.members || {}) {
-                const member = faction.members[xid];
+                const member = getMemberDisplayState({ ...faction.members[xid], xid });
 
                 if (!member) continue;
 
@@ -3339,15 +3896,16 @@
     }
 
     function getTrackedPlayerSortValue(member) {
-        if (!member) return 99;
-        if (member.status === 'traveling') return 0;
-        if (member.status === 'landed') return 1;
-        if (member.status === 'abroad') return 2;
+        const m = getMemberDisplayState(member);
+        if (!m) return 99;
+        if (m.status === 'traveling') return 0;
+        if (m.status === 'landed') return 1;
+        if (m.status === 'abroad') return 2;
         return 3;
     }
 
     function renderIndividualStaticCard(member) {
-        const m = member || {};
+        const m = getMemberDisplayState(member) || {};
         const xid = String(m.xid || m.playerId || '');
         const bsPill = renderBSPill(m);
         const isAbroad = m.status === 'abroad';
@@ -3382,7 +3940,7 @@
       <div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
         <div class="tt-row">
           <div class="tt-row-gap"><span style="font-size:22px;">\uD83D\uDC64</span><div><div style="font-size:16px;font-weight:700;">Tracked players</div><div style="font-size:12px;color:var(--tt-text-soft);">${trackedIds.length} player${trackedIds.length !== 1 ? 's' : ''} \u2022 Cloud</div></div></div>
-          <div style="display:flex;gap:7px;align-items:center;">${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
+          <div style="display:flex;gap:7px;align-items:center;">${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
         </div>
         ${renderMainModeTabs()}
         ${renderAccessNotice()}
@@ -3393,10 +3951,10 @@
       </div>`;
 
         if (!trackedIds.length) {
-            return headerHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.2.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
-        const members = trackedIds.map(xid => ({ ...state.trackedIndividuals[xid], xid }));
+        const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
         members.sort((a, b) => {
             const ap = getTrackedPlayerSortValue(a);
             const bp = getTrackedPlayerSortValue(b);
@@ -3426,12 +3984,13 @@
             }
         }
 
-        return headerHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.2.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
+        bindAccountEntryButton();
         bindAdminEntryButton();
         bindAccessRecoveryActions();
 
@@ -3517,7 +4076,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.2.6</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.1</span></div>
         </div>`;
     }
 
@@ -3568,7 +4127,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.2.6</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.1</span></div>
             </div>`;
         }
 
@@ -3602,7 +4161,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.2.6</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.1</span></div>
         </div>`;
     }
 
@@ -3660,6 +4219,12 @@
             return;
         }
 
+        if (state.panelMode === 'account') {
+            panel.innerHTML = renderAccountPanel();
+            bindAccountPanel(panel);
+            return;
+        }
+
         if (state.panelMode === 'admin' && isAdminUser()) {
             panel.innerHTML = renderAdminPanel();
             bindAdminPanel(panel);
@@ -3704,7 +4269,7 @@
       <div style="position:sticky;top:-16px;margin:-16px -16px 10px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
         <div class="tt-row">
           <div class="tt-row-gap"><span style="font-size:22px;">\u2708\uFE0F</span><div><div style="font-size:16px;font-weight:700;">Travel tracker</div><div style="font-size:12px;color:var(--tt-text-soft);">${fids.length} faction${fids.length !== 1 ? 's' : ''} \u2022 ${modeLabel}</div></div></div>
-          <div style="display:flex;gap:8px;align-items:center;">${copyAllBtnHtml}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
+          <div style="display:flex;gap:8px;align-items:center;">${copyAllBtnHtml}${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
         </div>
         ${renderMainModeTabs()}
         ${renderAccessNotice()}
@@ -3735,10 +4300,11 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.2.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.1</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
+        bindAccountEntryButton();
         bindAdminEntryButton();
         bindAccessRecoveryActions();
 
@@ -3765,11 +4331,9 @@
                 const flying = [];
 
                 for (const xid in members) {
-                    const m = members[xid];
+                    const m = getMemberDisplayState({ ...members[xid], xid }, now);
 
                     if (m.status !== 'traveling') continue;
-
-                    m.xid = xid;
                     flying.push(m);
                 }
 
@@ -3831,7 +4395,7 @@
                     if (isBusiness && isCommercial && !isLanding) {
                         const businessBase = BUSINESS_DURATIONS[m.lookupDest] || (DEFAULT_DURATIONS[m.lookupDest]?.[m.flightType] * 0.30);
                         const bizFastestETA = m.travelStarted + businessBase * 0.97 * 60000 - DETECT_DELAY;
-                        const bizSlowestETA = m.travelStarted + businessBase * 1.03 * 60000;
+                        const bizSlowestETA = m.travelStarted + businessBase * 1.03 * 60000 + DETECT_DELAY;
 
                         text += `   Business: ${formatTime(Math.max(0, bizFastestETA - now))}-${formatTime(Math.max(0, bizSlowestETA - now))}\n`;
                     }
@@ -4025,7 +4589,8 @@
         } else {
             for (const fid of fids) {
                 const f = state.watchedFactions[fid];
-                const members = Object.values(f.members || {});
+                const now = Date.now();
+                const members = Object.entries(f.members || {}).map(([xid, member]) => getMemberDisplayState({ ...member, xid }, now));
                 const travelling = members.filter(m => m.status === 'traveling' || m.status === 'landed');
                 const out = travelling.filter(m => m.status === 'traveling' && m.destination !== 'Torn').length;
                 const ret = travelling.filter(m => m.status === 'traveling' && m.destination === 'Torn').length;
@@ -4058,9 +4623,7 @@
         const landed = [];
 
         for (const xid in members) {
-            const m = members[xid];
-
-            m.xid = xid;
+            const m = getMemberDisplayState({ ...members[xid], xid }, now);
 
             if (m.status === 'traveling') flying.push(m);
             else if (m.status === 'landed') landed.push(m);
@@ -4126,23 +4689,35 @@
     }
 
     function renderLandedCard(m, options = {}) {
+        m = getMemberDisplayState(m);
+        if (!m || m.status !== 'landed') return '';
+
+        const landedAt = Number(m.landedAt || 0);
+        if (!Number.isFinite(landedAt) || landedAt <= 0) return '';
+
         const bsPill = renderBSPill(m);
-        const elapsed = Date.now() - m.landedAt;
+        const elapsed = Math.max(0, Date.now() - landedAt);
         const elapsedStr = formatElapsed(elapsed);
+        const landedUntil = landedAt + LANDED_DISPLAY_MS;
         const route = m.destination === 'Torn' ? '\u2190 ' + m.origin : m.origin + ' \u2192 ' + m.destination;
         const untrackHtml = options.untrack ? `<button class="tt-player-action tt-player-action--untrack" data-track-stop="${m.xid}">UNTRACK</button>` : '';
 
-        return `<div class="tt-member-card" style="background:radial-gradient(circle at 0 0, rgba(76,175,80,0.2), transparent 55%), var(--tt-bg-card);border-color:rgba(76,175,80,0.7);">
+        return `<div class="tt-member-card" data-landed-until="${landedUntil}" style="background:radial-gradient(circle at 0 0, rgba(76,175,80,0.2), transparent 55%), var(--tt-bg-card);border-color:rgba(76,175,80,0.7);">
       <div class="tt-member-main"><div class="tt-member-name"><a href="/profiles.php?XID=${m.xid}" target="_blank">${escapeHtml(m.playerName)}</a></div><div class="tt-member-route">${escapeHtml(route)}</div></div>
       <div class="tt-member-meta">
-        <span class="tt-chip tt-chip-success"><span style="font-size:12px;">LANDED</span><span style="font-family:monospace;font-size:11px;margin-left:4px;">${formatWallClock(m.landedAt)}</span></span>
+        <span class="tt-chip tt-chip-success"><span style="font-size:12px;">LANDED</span><span style="font-family:monospace;font-size:11px;margin-left:4px;">${formatWallClock(landedAt)}</span></span>
         <div class="tt-row-gap">${bsPill}<span style="font-size:12px;color:var(--tt-text-soft);">${m.flightType}</span>${untrackHtml}</div>
       </div>
-      <div style="margin-top:4px;font-size:11px;color:var(--tt-text-soft);text-align:right;">Elapsed: ${elapsedStr}</div>
+      <div style="margin-top:4px;font-size:11px;color:var(--tt-text-soft);text-align:right;">Elapsed: <span class="tt-live-elapsed" data-start="${landedAt}">${elapsedStr}</span></div>
     </div>`;
     }
 
     function renderTravelCard(m, now, options = {}) {
+        m = getMemberDisplayState(m, now);
+        if (!m) return '';
+        if (m.status === 'landed') return renderLandedCard(m, options);
+        if (m.status !== 'traveling') return '';
+
         const allowBiz = options.allowBiz !== false;
         const copyEnabled = options.copyEnabled !== false;
         const untrackHtml = options.untrack ? `<button class="tt-player-action tt-player-action--untrack" data-track-stop="${m.xid}">UNTRACK</button>` : '';
@@ -4155,6 +4730,7 @@
         // A tracker user's Torn .until is authoritative. At zero they are presented as LANDED
         // immediately, without waiting for the next faction-status poll.
         if (hasExactArrival && exactRemRaw <= 0) {
+            if (-exactRemRaw >= LANDED_DISPLAY_MS) return '';
             return renderLandedCard({ ...m, status: 'landed', landedAt: exactArrival }, options);
         }
 
@@ -4179,9 +4755,9 @@
             bizSlowestETA = exactArrival;
         } else {
             fastestETA = Number(m.travelStarted) + fastestDur * 60000 - DETECT_DELAY;
-            slowestETA = Number(m.travelStarted) + slowestDur * 60000;
+            slowestETA = Number(m.travelStarted) + slowestDur * 60000 + DETECT_DELAY;
             bizFastestETA = Number(m.travelStarted) + bizFastestDur * 60000 - DETECT_DELAY;
-            bizSlowestETA = Number(m.travelStarted) + bizSlowestDur * 60000;
+            bizSlowestETA = Number(m.travelStarted) + bizSlowestDur * 60000 + DETECT_DELAY;
         }
 
         const fastestRemRaw = fastestETA - now;
