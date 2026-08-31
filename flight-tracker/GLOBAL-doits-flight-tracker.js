@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.3
+// @name         1 Doits Flight Tracker v18.4.4 - Auth Recovery
 // @namespace    https://github.com/your-repo
-// @version      18.4.3
+// @version      18.4.4
 // @description  Private Cloudflare travel tracker with faction applications, desktop/mobile UI, built-in welcome and help, threat awareness, recovery, and admin management
 // @author       Doitsburger
 // @match        https://www.torn.com/*
@@ -28,6 +28,8 @@
     const LANDING_ALERT_MS = 5 * 60 * 1000;
     const EXACT_LANDING_PHASE_MS = 1 * 60 * 1000;
     const LANDED_DISPLAY_MS = 1 * 60 * 1000;
+    const AUTH_CONFIRM_DELAY_MS = 1000;
+    const AUTH_FAILURE_LIMIT = 3;
 
     const DEFAULT_DURATIONS = {
         "Mexico": { "Commercial": 24, "Personal": 17, "Private": 12 },
@@ -134,6 +136,7 @@
     // ==================== STATE ====================
     let myBattleStats = null;
     let pollTimer = null;
+    let authConfirmPromise = null;
 
     let state = {
         apiKeySet: false,
@@ -154,6 +157,9 @@
         warFactions: new Set(),
         lastPollTime: 0,
         serverOnline: true,
+        authFailureCount: 0,
+        authReconnecting: false,
+        authRejected: false,
         activeTab: 'all',
         abroadView: 'all',
         abroadCollapsedSections: new Set(),
@@ -622,6 +628,10 @@
         state.factionApplicationBusy = false;
         state.registrationPending = false;
         state.registrationAccessLost = false;
+        state.authFailureCount = 0;
+        state.authReconnecting = false;
+        state.authRejected = false;
+        authConfirmPromise = null;
         state.registrationBusy = false;
         state.pendingActivationBusy = false;
         state.adminRequests = { pendingCount: 0, approvedCount: 0, requests: [] };
@@ -984,6 +994,122 @@
         const name = escapeHtml(admin.name || 'Tracker Admin');
         const url = escapeHtml(admin.profileUrl || ('https://www.torn.com/profiles.php?XID=' + admin.tornUserId));
         return `<a class="tt-support-admin-link" href="${url}" target="_blank">${name}</a>`;
+    }
+
+    function syncReconnectIndicator() {
+        const panel = document.getElementById('travel-panel');
+        const existing = document.getElementById('tt-reconnect-indicator');
+        const shouldShow = !!(
+            panel &&
+            state.authReconnecting &&
+            !state.authRejected &&
+            state.authenticated &&
+            state.serverOnline
+        );
+
+        if (!shouldShow) {
+            existing?.remove();
+            return;
+        }
+
+        if (existing) return;
+
+        const indicator = document.createElement('div');
+        indicator.id = 'tt-reconnect-indicator';
+        indicator.textContent = 'RECONNECTING...';
+        indicator.style.cssText = 'position:absolute;top:52px;left:50%;transform:translateX(-50%);z-index:9999999;padding:5px 9px;border-radius:6px;border:1px solid rgba(255,179,0,0.58);background:rgba(18,18,18,0.94);color:#FFE082;font-size:9px;font-weight:900;letter-spacing:0.06em;box-shadow:0 4px 14px rgba(0,0,0,0.45);pointer-events:none;white-space:nowrap;';
+        panel.appendChild(indicator);
+    }
+
+    function updateTrackerStatusDot() {
+        const dot = document.getElementById('travel-tracker-status');
+        if (!dot) return;
+
+        if (!state.serverOnline) {
+            dot.className = 'tt-dot tt-dot--offline';
+            dot.title = 'Cloud tracker unavailable';
+            return;
+        }
+
+        if (state.authReconnecting) {
+            dot.className = 'tt-dot tt-dot--apikey';
+            dot.title = 'Reconnecting to tracker';
+            return;
+        }
+
+        if (state.authRejected) {
+            dot.className = 'tt-dot tt-dot--offline';
+            dot.title = 'Tracker login rejected';
+            return;
+        }
+
+        dot.className = state.apiKeySet ? 'tt-dot tt-dot--online' : 'tt-dot tt-dot--apikey';
+        dot.title = state.apiKeySet ? 'Tracker online' : 'Tracker setup required';
+    }
+
+    function markAuthenticationHealthy() {
+        state.authFailureCount = 0;
+        state.authReconnecting = false;
+        state.authRejected = false;
+        state.registrationAccessLost = false;
+        state.serverOnline = true;
+        if (hasTrackerCredentials()) state.authenticated = true;
+        updateTrackerStatusDot();
+        syncReconnectIndicator();
+    }
+
+    async function confirmAuthenticationAfter401() {
+        if (authConfirmPromise) return authConfirmPromise;
+
+        state.authReconnecting = true;
+        state.serverOnline = true;
+        if (!state.authRejected && hasTrackerCredentials()) state.authenticated = true;
+        updateTrackerStatusDot();
+        syncReconnectIndicator();
+
+        authConfirmPromise = (async () => {
+            await new Promise(resolve => setTimeout(resolve, AUTH_CONFIRM_DELAY_MS));
+
+            try {
+                await cloudRequest('GET', '/client/ping');
+                markAuthenticationHealthy();
+                return 'healthy';
+            } catch (e) {
+                if (e.status === 401) {
+                    state.authFailureCount += 1;
+                    state.serverOnline = true;
+
+                    if (state.authFailureCount >= AUTH_FAILURE_LIMIT) {
+                        state.authRejected = true;
+                        state.authReconnecting = false;
+                        state.authenticated = false;
+                        if (state.registrationPending) state.registrationAccessLost = true;
+                        updateTrackerStatusDot();
+                        syncReconnectIndicator();
+                        return 'rejected';
+                    }
+
+                    state.authRejected = false;
+                    state.authReconnecting = true;
+                    state.authenticated = true;
+                    updateTrackerStatusDot();
+                    syncReconnectIndicator();
+                    return 'retry';
+                }
+
+                state.authReconnecting = false;
+                state.serverOnline = false;
+                updateTrackerStatusDot();
+                syncReconnectIndicator();
+                return 'offline';
+            }
+        })();
+
+        try {
+            return await authConfirmPromise;
+        } finally {
+            authConfirmPromise = null;
+        }
     }
 
     async function refreshAccessStatus(force = false) {
@@ -1374,8 +1500,11 @@
             state.authenticated = false;
             state.apiKeySet = false;
             state.serverOnline = true;
-            const dot = document.getElementById('travel-tracker-status');
-            if (dot) dot.className = 'tt-dot tt-dot--apikey';
+            state.authFailureCount = 0;
+            state.authReconnecting = false;
+            state.authRejected = false;
+            updateTrackerStatusDot();
+            syncReconnectIndicator();
             return;
         }
 
@@ -1385,21 +1514,12 @@
             try {
                 access = await refreshAccessStatus(false);
             } catch (accessError) {
-                if (state.registrationPending && accessError.status === 401) {
-                    state.registrationAccessLost = true;
-                    state.authenticated = false;
-                    state.apiKeySet = true;
-                    state.serverOnline = true;
-                    const pendingDot = document.getElementById('travel-tracker-status');
-                    if (pendingDot) pendingDot.className = 'tt-dot tt-dot--apikey';
-                    if (state.panelVisible) updatePanelContent();
-                    return;
-                }
                 throw accessError;
             }
 
             if (access && (access.accessType === 'pending' || access.accessStatus === 'pending')) {
                 setRegistrationPending(true);
+                markAuthenticationHealthy();
                 state.authenticated = true;
                 state.apiKeySet = true;
                 state.serverOnline = true;
@@ -1420,6 +1540,7 @@
             if (state.registrationPending) setRegistrationPending(false);
 
             const data = await fetchState();
+            markAuthenticationHealthy();
             state.authenticated = true;
             state.apiKeySet = !!data.myUserID;
             state.lastPollTime = Date.now();
@@ -1494,8 +1615,7 @@
                 if (isAdminUser()) await refreshAdminRequests(false);
             } catch (e) {}
 
-            const dot = document.getElementById('travel-tracker-status');
-            if (dot) dot.className = state.apiKeySet ? 'tt-dot tt-dot--online' : 'tt-dot tt-dot--apikey';
+            updateTrackerStatusDot();
 
             if (state.panelVisible) {
                 const panel = document.getElementById('travel-panel');
@@ -1506,14 +1626,16 @@
             }
         } catch (e) {
             if (e.status === 401) {
-                state.authenticated = false;
-                state.apiKeySet = false;
-                state.serverOnline = true;
+                await confirmAuthenticationAfter401();
             } else {
+                state.authReconnecting = false;
                 state.serverOnline = false;
             }
-            const dot = document.getElementById('travel-tracker-status');
-            if (dot) dot.className = state.serverOnline ? 'tt-dot tt-dot--apikey' : 'tt-dot tt-dot--offline';
+
+            updateTrackerStatusDot();
+            syncReconnectIndicator();
+
+            if (state.panelVisible) updatePanelContent();
         }
     }
 
@@ -2167,7 +2289,7 @@
       .tt-pending-line:last-child { border-bottom:0; }
 
 
-      /* v18.4.3 - admin-matched universal onboarding + Global Pool state */
+      /* v18.4.4 - admin-matched universal onboarding + Global Pool state + resilient auth recovery */
       #travel-panel .tt-onboard-shell,
       #travel-panel .tt-onboard-shell * { box-sizing:border-box; }
       #travel-panel .tt-onboard-shell { min-height:100%;display:flex;flex-direction:column;text-align:left;color:#F5F5F5 !important;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif !important;font-size:12px !important;line-height:1.35 !important; }
@@ -2416,7 +2538,7 @@
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.3</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.4</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -2624,7 +2746,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.3</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.4</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -2828,7 +2950,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.3</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.4</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -4261,7 +4383,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.4</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4294,7 +4416,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.4</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4388,7 +4510,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.3</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.4</span></div>
         </div>`;
     }
 
@@ -4439,7 +4561,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.3</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.4</span></div>
             </div>`;
         }
 
@@ -4473,7 +4595,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.3</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.4</span></div>
         </div>`;
     }
 
@@ -4494,6 +4616,8 @@
 
         if (!panel) return;
 
+        queueMicrotask(syncReconnectIndicator);
+
         if (!hasTrackerCredentials()) {
             panel.innerHTML = renderUniversalSetupScreen();
             bindUniversalSetupScreen();
@@ -4513,8 +4637,19 @@
         }
 
         if (!state.authenticated) {
-            panel.innerHTML = `<div style="text-align:center;padding:32px 16px;"><div style="font-size:40px;">\uD83D\uDD12</div><div style="font-weight:700;font-size:18px;margin:8px 0;">Tracker login rejected</div><div style="font-size:13px;color:var(--tt-text-soft);">The saved tracker credentials are no longer valid.</div><button id="tt-forget-account" class="tt-watch-btn" style="margin-top:16px;">Forget account</button></div>`;
-            document.getElementById('tt-forget-account')?.addEventListener('click', () => { if (confirm('Forget this linked tracker account from this browser?')) { clearTrackerCredentials(); updatePanelContent(); } });
+            if (state.authRejected) {
+                panel.innerHTML = `<div style="text-align:center;padding:32px 16px;"><div style="font-size:40px;">\uD83D\uDD12</div><div style="font-weight:700;font-size:18px;margin:8px 0;">Tracker login rejected</div><div style="font-size:13px;color:var(--tt-text-soft);line-height:1.5;">The tracker confirmed the saved credentials were rejected repeatedly.</div><button id="tt-auth-retry" class="tt-watch-btn" style="margin-top:16px;">Retry login</button><button id="tt-forget-account" class="tt-watch-btn" style="margin-top:16px;margin-left:6px;">Forget account</button></div>`;
+                document.getElementById('tt-auth-retry')?.addEventListener('click', async () => { state.authRejected = false; state.authFailureCount = 0; state.authReconnecting = true; state.authenticated = true; updatePanelContent(); await pollServer(); });
+                document.getElementById('tt-forget-account')?.addEventListener('click', () => { if (confirm('Forget this linked tracker account from this browser?')) { clearTrackerCredentials(); updatePanelContent(); } });
+                return;
+            }
+
+            panel.innerHTML = `<div style="text-align:center;padding:32px 16px;"><div style="font-size:40px;">\uD83D\uDD04</div><div style="font-weight:700;font-size:18px;margin:8px 0;">Connecting to tracker</div><div style="font-size:13px;color:var(--tt-text-soft);line-height:1.5;">Checking your saved tracker session. A temporary authentication response will be retried automatically.</div></div>`;
+            return;
+        }
+
+        if (state.authReconnecting && !state.apiKeySet && !state.lastPollTime) {
+            panel.innerHTML = `<div style="text-align:center;padding:32px 16px;"><div style="font-size:40px;">\uD83D\uDD04</div><div style="font-weight:700;font-size:18px;margin:8px 0;">Reconnecting to tracker</div><div style="font-size:13px;color:var(--tt-text-soft);line-height:1.5;">Your saved tracker session is being verified. No account details have been cleared.</div></div>`;
             return;
         }
 
@@ -4618,7 +4753,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.3</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.4</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
