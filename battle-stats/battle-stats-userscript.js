@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Battle Stats Support
+// @name         Battle Stats Support - Intelligent Strategy Planner
 // @namespace    https://torn.com/
-// @version      5.0.0
-// @description  Dynamic Torn battle-stat planner with combat styles, gym intelligence, specialist planning and exact train-next targets
+// @version      6.1.0
+// @description  Intelligent Torn battle-stat planner with dynamic combat styles, perk-aware gym gains, future gym routing and specialist planning
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
@@ -13,12 +13,16 @@
 
     const REFRESH_MS = 60000;
     const API_KEY_STORAGE = 'torn_api_key';
-    const SETTINGS_STORAGE = 'bs_strategy_settings_v5';
+    const SETTINGS_STORAGE = 'bs_strategy_settings_v6';
+    const LEGACY_SETTINGS_STORAGE = 'bs_strategy_settings_v5';
     const OBSERVED_GYM_STORAGE = 'bs_strategy_observed_gym_v5';
     const OWNED_SPECIALISTS_STORAGE = 'bs_strategy_owned_specialists_v5';
     const GYM_CACHE_STORAGE = 'bs_strategy_gym_cache_v5';
-    const PUSH_STORAGE = 'bs_strategy_push_v5';
+    const PUSH_STORAGE = 'bs_strategy_push_v6';
     const GYM_CACHE_MS = 6 * 60 * 60 * 1000;
+    const PERKS_CACHE_MS = 5 * 60 * 1000;
+    const DRUGS_CACHE_MS = 30 * 60 * 1000;
+    const WIKI_GYM_SOURCE = 'Torn Wiki · Gym';
     const STATS = ['strength', 'speed', 'defense', 'dexterity'];
     const LABELS = { strength: 'Strength', speed: 'Speed', defense: 'Defense', dexterity: 'Dexterity' };
 
@@ -94,8 +98,10 @@
     let settings = loadSettings();
     let latest = null;
     let gymCatalog = mergeGymCatalog([]);
-    let gymCatalogSource = 'Fallback';
+    let gymCatalogSource = 'Wiki fallback';
     let isFetching = false;
+    let perkCache = { savedAt: 0, data: null };
+    let drugCache = { savedAt: 0, data: null };
 
     function gym(name, gymClass, energy, strength, speed, defense, dexterity, nextEnergy) {
         return { id: null, name, class: gymClass, energy, modifiers: { strength, speed, defense, dexterity }, nextEnergy, note: null };
@@ -124,13 +130,17 @@
     function loadSettings() {
         const defaults = defaultSettings();
         try {
-            const raw = JSON.parse(localStorage.getItem(SETTINGS_STORAGE) || '{}');
-            return {
+            const current = localStorage.getItem(SETTINGS_STORAGE);
+            const legacy = localStorage.getItem(LEGACY_SETTINGS_STORAGE);
+            const raw = JSON.parse(current || legacy || '{}');
+            const merged = {
                 ...defaults,
                 ...raw,
                 customRatios: { ...defaults.customRatios, ...(raw.customRatios || {}) },
                 customTrainable: { ...defaults.customTrainable, ...(raw.customTrainable || {}) }
             };
+            if (!current && legacy) localStorage.setItem(SETTINGS_STORAGE, JSON.stringify(merged));
+            return merged;
         } catch (e) {
             return defaults;
         }
@@ -216,6 +226,38 @@
         }
     }
 
+
+    async function fetchBars() {
+        try {
+            const data = await apiRequest('https://api.torn.com/v2/user/bars');
+            return data.bars || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function fetchPerksCached(force = false) {
+        if (!force && perkCache.data && Date.now() - perkCache.savedAt < PERKS_CACHE_MS) return perkCache.data;
+        try {
+            const data = await apiRequest('https://api.torn.com/v2/user/perks');
+            perkCache = { savedAt: Date.now(), data: data.perks || null };
+            return perkCache.data;
+        } catch (e) {
+            return perkCache.data;
+        }
+    }
+
+    async function fetchDrugStatsCached(force = false) {
+        if (!force && drugCache.data && Date.now() - drugCache.savedAt < DRUGS_CACHE_MS) return drugCache.data;
+        try {
+            const data = await apiRequest('https://api.torn.com/v2/user/personalstats?cat=drugs');
+            drugCache = { savedAt: Date.now(), data: data.personalstats?.drugs || null };
+            return drugCache.data;
+        } catch (e) {
+            return drugCache.data;
+        }
+    }
+
     async function loadGymCatalog() {
         try {
             const cached = JSON.parse(localStorage.getItem(GYM_CACHE_STORAGE) || 'null');
@@ -231,7 +273,7 @@
             gymCatalogSource = 'Live API';
             return mergeGymCatalog(gyms.map(normalizeApiGym));
         } catch (e) {
-            gymCatalogSource = 'Fallback';
+            gymCatalogSource = 'Wiki fallback';
             return mergeGymCatalog([]);
         }
     }
@@ -259,15 +301,29 @@
         if (!latest) renderLoading();
         try {
             if (forceCatalog) localStorage.removeItem(GYM_CACHE_STORAGE);
-            const [statsResult, gymResult, catalogResult] = await Promise.allSettled([
+            const [statsResult, gymResult, catalogResult, barsResult, perksResult, drugsResult] = await Promise.allSettled([
                 fetchBattleStats(),
                 fetchActiveGym(),
-                loadGymCatalog()
+                loadGymCatalog(),
+                fetchBars(),
+                fetchPerksCached(forceCatalog),
+                fetchDrugStatsCached(forceCatalog)
             ]);
             if (statsResult.status !== 'fulfilled') throw statsResult.reason;
             gymCatalog = catalogResult.status === 'fulfilled' ? catalogResult.value : mergeGymCatalog([]);
             const activeGym = gymResult.status === 'fulfilled' ? gymResult.value : null;
-            latest = { stats: statsResult.value, activeGym, error: null };
+            const bars = barsResult.status === 'fulfilled' ? barsResult.value : null;
+            const perks = perksResult.status === 'fulfilled' ? perksResult.value : null;
+            const drugs = drugsResult.status === 'fulfilled' ? drugsResult.value : null;
+            latest = {
+                stats: statsResult.value,
+                activeGym,
+                bars,
+                perks,
+                trainingBonuses: parseTrainingBonuses(perks),
+                drugs,
+                error: null
+            };
             observeGymProgress(activeGym);
             renderMain();
         } catch (e) {
@@ -303,6 +359,12 @@
         }
     }
 
+
+    function setOwnedSpecialists(names) {
+        const valid = [...new Set((Array.isArray(names) ? names : []).filter(name => SPECIALIST_RULES[name]))];
+        localStorage.setItem(OWNED_SPECIALISTS_STORAGE, JSON.stringify(valid));
+    }
+
     function getProgressIndex(activeGym) {
         if (settings.highestStandardGym) {
             const i = STANDARD_GYMS.findIndex(g => g.name === settings.highestStandardGym);
@@ -331,8 +393,95 @@
         return Math.round(base * (1 + (Number(mod) || 0) / 100));
     }
 
+
+    function parseTrainingBonuses(perks) {
+        const categories = ['faction', 'job', 'property', 'education', 'enhancer', 'book', 'stock', 'merit'];
+        const categoryPct = {};
+        const entries = [];
+        categories.forEach(category => {
+            categoryPct[category] = { strength: 0, speed: 0, defense: 0, dexterity: 0 };
+            const list = Array.isArray(perks?.[category]) ? perks[category] : [];
+            list.forEach(raw => {
+                const text = String(raw || '').trim();
+                const lower = text.toLowerCase();
+                if (!lower.includes('gym') || !lower.includes('gain')) return;
+                const match = text.match(/([+-]?\d+(?:\.\d+)?)\s*%/);
+                if (!match) return;
+                const amount = Number(match[1]);
+                if (!Number.isFinite(amount)) return;
+                const targets = [];
+                if (lower.includes('strength')) targets.push('strength');
+                if (lower.includes('speed')) targets.push('speed');
+                if (lower.includes('defense') || lower.includes('defence')) targets.push('defense');
+                if (lower.includes('dexterity')) targets.push('dexterity');
+                if (!targets.length) STATS.forEach(stat => targets.push(stat));
+                targets.forEach(stat => categoryPct[category][stat] += amount);
+                entries.push({ category, text, amount, stats: targets.slice() });
+            });
+        });
+        const byStat = {};
+        STATS.forEach(stat => {
+            let factor = 1;
+            const parts = [];
+            categories.forEach(category => {
+                const amount = categoryPct[category][stat];
+                if (!amount) return;
+                factor *= 1 + amount / 100;
+                parts.push({ category, amount });
+            });
+            byStat[stat] = { factor, equivalentPct: (factor - 1) * 100, parts };
+        });
+        return { byStat, entries, categoryPct };
+    }
+
+    function trainingBonusFactor(stat) {
+        return latest?.trainingBonuses?.byStat?.[stat]?.factor || 1;
+    }
+
+    function trainingBonusPct(stat) {
+        return latest?.trainingBonuses?.byStat?.[stat]?.equivalentPct || 0;
+    }
+
+    function currentHappy() {
+        return Number(latest?.bars?.happy?.current) || 0;
+    }
+
+    function estimateGymGain(stat, gym, values, energy = null) {
+        if (!gym || !values || !(gym.modifiers?.[stat] > 0)) return null;
+        const happy = currentHappy();
+        if (!happy) return null;
+        const a = 3.480061091e-7;
+        const b = 250;
+        const c = 3.091619094e-6;
+        const d = 6.82775184551527e-5;
+        const e = -0.0301431777;
+        const trainEnergy = Number(energy ?? gym.energy) || 0;
+        if (trainEnergy <= 0) return null;
+        const bracket = (a * Math.log(happy + b) + c) * values[stat] + d * (happy + b) + e;
+        const gain = trainingBonusFactor(stat) * (gym.modifiers[stat] || 0) * trainEnergy * bracket;
+        return Number.isFinite(gain) ? Math.max(0, gain) : null;
+    }
+
+    function estimateGainPer100E(stat, gym, values) {
+        return estimateGymGain(stat, gym, values, 100);
+    }
+
+    function effectiveGymIndex(stat, gym) {
+        if (!gym) return 0;
+        return (gym.modifiers?.[stat] || 0) * trainingBonusFactor(stat);
+    }
+
     function formatNumber(value) {
         return Math.round(Number(value) || 0).toLocaleString();
+    }
+
+
+    function formatEstimate(value) {
+        value = Number(value);
+        if (!Number.isFinite(value)) return 'Unknown';
+        if (Math.abs(value) >= 1000) return Math.round(value).toLocaleString();
+        if (Math.abs(value) >= 100) return value.toFixed(1);
+        return value.toFixed(2);
     }
 
     function formatShort(value) {
@@ -468,10 +617,18 @@
     function specialistCheck(name, values, progressIndex, activeGymName) {
         const rule = SPECIALIST_RULES[name];
         if (!rule) return null;
-        let prereqMet = !rule.prereq || progressIndex >= STANDARD_GYMS.findIndex(g => g.name === rule.prereq);
+        const prereqIndex = rule.prereq ? STANDARD_GYMS.findIndex(g => g.name === rule.prereq) : -1;
+        let prereqMet = !rule.prereq || progressIndex >= prereqIndex;
         if (activeGymName === name) prereqMet = true;
-        if (rule.type === 'drugLimited') return { name, prereqMet, met: null, bufferMet: null, ratio: null, rule, conditional: true };
-        if (rule.type === 'invite') return { name, prereqMet: false, met: null, bufferMet: null, ratio: null, rule, conditional: true };
+        if (rule.type === 'drugLimited') {
+            const xanax = Number(latest?.drugs?.xanax);
+            const ecstasy = Number(latest?.drugs?.ecstasy);
+            const known = Number.isFinite(xanax) && Number.isFinite(ecstasy);
+            const combinedDrugs = known ? xanax + ecstasy : null;
+            const drugMet = known ? combinedDrugs <= 150 : null;
+            return { name, prereqMet, prereqIndex, met: drugMet, bufferMet: null, ratio: null, rule, conditional: true, combinedDrugs, drugKnown: known };
+        }
+        if (rule.type === 'invite') return { name, prereqMet: false, prereqIndex: -1, met: null, bufferMet: null, ratio: null, rule, conditional: true };
         let ratio = 0;
         if (rule.type === 'pairOffense') ratio = (values.strength + values.speed) / Math.max(1, values.defense + values.dexterity);
         if (rule.type === 'pairDefense') ratio = (values.defense + values.dexterity) / Math.max(1, values.strength + values.speed);
@@ -479,7 +636,7 @@
             const others = STATS.filter(s => s !== rule.stat).map(s => values[s]).sort((a, b) => b - a);
             ratio = values[rule.stat] / Math.max(1, others[0]);
         }
-        return { name, prereqMet, met: ratio >= rule.factor, bufferMet: ratio >= 1.27, ratio, rule, conditional: false };
+        return { name, prereqMet, prereqIndex, met: ratio >= rule.factor, bufferMet: ratio >= 1.27, ratio, rule, conditional: false };
     }
 
     function getRelevantConstraintChecks(plan, values, progressIndex, activeGymName) {
@@ -504,9 +661,12 @@
 
     function urgentSpecialistSupport(plan, values, targets, progressIndex, activeGymName) {
         const checks = getRelevantConstraintChecks(plan, values, progressIndex, activeGymName);
+        const planningWindow = settings.philosophy === 'gym' ? 4 : settings.philosophy === 'hybrid' ? 2 : 0;
         for (const check of checks) {
             const isActive = activeGymName === check.name;
-            const shouldProtect = isActive || (settings.philosophy !== 'combat' && check.prereqMet);
+            const distance = check.prereqIndex >= 0 ? check.prereqIndex - progressIndex : 99;
+            const approaching = !check.prereqMet && distance >= 0 && distance <= planningWindow;
+            const shouldProtect = isActive || (settings.philosophy !== 'combat' && (check.prereqMet || approaching));
             if (!shouldProtect || check.conditional) continue;
             const targetFactor = isActive || settings.philosophy === 'gym' ? 1.27 : 1.26;
             if (check.ratio >= targetFactor) continue;
@@ -525,20 +685,79 @@
                 gain = Math.ceil(targetFactor * second - values[r.stat]);
             }
             if (stat && gain > 0) {
-                return { stat, gain, target: values[stat] + gain, mode: isActive ? 'SPECIALIST PROTECTION' : 'GYM PREPARATION', reason: `${check.name} needs a ${targetFactor.toFixed(2)}× safety relationship. Build the required buffer before training against it.`, specialist: check.name };
+                const mode = isActive ? 'SPECIALIST PROTECTION' : approaching ? 'FUTURE GYM PREP' : 'GYM PREPARATION';
+                const timing = approaching ? ` ${check.name} is ${distance} standard-gym step${distance === 1 ? '' : 's'} away by prerequisite.` : '';
+                return { stat, gain, target: values[stat] + gain, mode, reason: `${check.name} needs a ${targetFactor.toFixed(2)}× safety relationship.${timing} Build the buffer before training against it.`, specialist: check.name };
             }
         }
         return null;
     }
 
+    function stageEnergyEstimate(progressIndex, targetIndex) {
+        if (targetIndex <= progressIndex) return 0;
+        let energy = 0;
+        for (let i = progressIndex; i < targetIndex && i < STANDARD_GYMS.length; i++) energy += Number(STANDARD_GYMS[i].nextEnergy) || 0;
+        return energy;
+    }
+
     function futureStandardOpportunity(stat, progressIndex, currentBest) {
         const base = currentBest?.modifiers[stat] || 0;
+        const options = [];
         for (let i = progressIndex + 1; i < STANDARD_GYMS.length; i++) {
             const g = getGymByName(STANDARD_GYMS[i].name) || STANDARD_GYMS[i];
             const mod = g.modifiers[stat] || 0;
-            if (mod > base + .09) return { gym: g, index: i, distance: i - progressIndex, improvement: mod - base };
+            if (mod <= base + .09) continue;
+            const distance = i - progressIndex;
+            options.push({ type: 'standard', gym: g, index: i, distance, improvement: mod - base, energyEstimate: stageEnergyEstimate(progressIndex, i) });
         }
-        return null;
+        if (!options.length) return null;
+        return options.sort((a, b) => (b.improvement / Math.max(1, b.distance + .5)) - (a.improvement / Math.max(1, a.distance + .5)))[0];
+    }
+
+    function futureSpecialistOpportunities(stat, plan, values, progressIndex, activeGymName, currentBest) {
+        const base = currentBest?.modifiers?.[stat] || 0;
+        const names = new Set(plan.specialists || []);
+        const ssl = specialistCheck('The Sports Science Lab', values, progressIndex, activeGymName);
+        if (ssl?.met !== false) names.add('The Sports Science Lab');
+        const owned = new Set(getOwnedSpecialists());
+        const out = [];
+        names.forEach(name => {
+            if (name === 'Fight Club') return;
+            const rule = SPECIALIST_RULES[name];
+            const g = getGymByName(name);
+            if (!rule || !g || !(g.modifiers?.[stat] > base + .09)) return;
+            const check = specialistCheck(name, values, progressIndex, activeGymName);
+            if (!check) return;
+            if (check.conditional && check.met === false) return;
+            const prereqIndex = check.prereqIndex >= 0 ? check.prereqIndex : progressIndex;
+            const distance = Math.max(0, prereqIndex - progressIndex);
+            const ratioReady = check.conditional ? check.met !== false : check.met;
+            const usableNow = owned.has(name) && check.prereqMet && ratioReady;
+            if (usableNow) return;
+            out.push({
+                type: 'specialist', gym: g, check, distance, improvement: (g.modifiers[stat] || 0) - base,
+                energyEstimate: distance > 0 ? stageEnergyEstimate(progressIndex, prereqIndex) : 0,
+                ratioReady, prereqMet: check.prereqMet, owned: owned.has(name)
+            });
+        });
+        return out.sort((a, b) => {
+            const aScore = a.improvement / Math.max(1, a.distance + .5);
+            const bScore = b.improvement / Math.max(1, b.distance + .5);
+            return bScore - aScore;
+        });
+    }
+
+    function futureTrainingOpportunity(stat, plan, values, progressIndex, activeGymName, currentBest) {
+        const options = [];
+        const standard = futureStandardOpportunity(stat, progressIndex, currentBest);
+        if (standard) options.push(standard);
+        options.push(...futureSpecialistOpportunities(stat, plan, values, progressIndex, activeGymName, currentBest));
+        if (!options.length) return null;
+        return options.sort((a, b) => {
+            const aScore = a.improvement / Math.max(1, a.distance + .5);
+            const bScore = b.improvement / Math.max(1, b.distance + .5);
+            return bScore - aScore;
+        })[0];
     }
 
     function knownBestGymForStat(stat, values, progressIndex, activeGymName) {
@@ -547,7 +766,7 @@
         owned.forEach(name => {
             const check = specialistCheck(name, values, progressIndex, activeGymName);
             const g = getGymByName(name);
-            if (g && check?.met && (g.modifiers[stat] || 0) > (best?.modifiers[stat] || 0)) best = g;
+            if (g && check?.prereqMet && check?.met && (g.modifiers[stat] || 0) > (best?.modifiers[stat] || 0)) best = g;
         });
         const active = getActiveGymDetails(latest?.activeGym);
         if (active && (active.modifiers?.[stat] || 0) > (best?.modifiers[stat] || 0)) best = active;
@@ -634,7 +853,7 @@
         const candidates = STATS.filter(s => plan.trainable[s]).map(stat => {
             const gain = gainNeededForShare(values[stat], total, targets[stat]);
             const bestGym = knownBestGymForStat(stat, values, progressIndex, activeGym?.name);
-            const future = futureStandardOpportunity(stat, progressIndex, bestGym);
+            const future = futureTrainingOpportunity(stat, plan, values, progressIndex, activeGym?.name, bestGym);
             return { stat, gain, bestGym, future };
         }).filter(c => c.gain > 0);
 
@@ -652,8 +871,8 @@
 
         candidates.forEach(c => {
             const need = c.gain / maxGain;
-            const eff = clamp((c.bestGym?.modifiers[c.stat] || 0) / 8, 0, 1.25);
-            const futurePenalty = c.future ? clamp((c.future.improvement / 2) * (1 / Math.max(1, c.future.distance)), 0, .5) : 0;
+            const eff = clamp(effectiveGymIndex(c.stat, c.bestGym) / 9, 0, 1.4);
+            const futurePenalty = c.future ? clamp((c.future.improvement / 2) * (1 / Math.max(1, c.future.distance)), 0, .6) : 0;
             const spec = specialistSynergy(c.stat, plan, values, progressIndex, activeGym?.name);
             const lead = c.stat === plan.lead ? .03 : 0;
             c.score = weights.need * need + weights.efficiency * eff - weights.future * futurePenalty + weights.specialist * spec + lead;
@@ -670,6 +889,10 @@
         const finalCap = safetyCapForGain(chosen.stat, values, chosen.gain, checks, activeGym?.name);
         let gain = Math.max(1, finalCap.gain > 0 ? finalCap.gain : chosen.gain);
         let reason = `${LABELS[chosen.stat]} is below its dynamic ${pct(targets[chosen.stat])} build target.`;
+        if (chosen.future && settings.philosophy !== 'combat') {
+            const futureName = chosen.future.gym?.name;
+            if (futureName && chosen.future.distance <= 2) reason += ` A stronger ${LABELS[chosen.stat]} gym is approaching, so this checkpoint avoids over-correcting before ${futureName}.`;
+        }
         if (finalCap.specialist && gain < chosen.gain) reason += ` Stop at this checkpoint to preserve ${finalCap.specialist}.`;
         return enrichRecommendation({ stat: chosen.stat, gain, target: values[chosen.stat] + gain, mode: 'TRAIN NEXT', reason, cappedBy: finalCap.specialist }, plan, values, targets, progressIndex, activeGym);
     }
@@ -678,22 +901,49 @@
         const stat = rec.stat;
         const currentGym = getActiveGymDetails(activeGym);
         const bestGym = knownBestGymForStat(stat, values, progressIndex, activeGym?.name);
-        const future = futureStandardOpportunity(stat, progressIndex, bestGym);
+        const future = futureTrainingOpportunity(stat, plan, values, progressIndex, activeGym?.name, bestGym);
         const currentMod = currentGym?.modifiers?.[stat] || 0;
         const bestMod = bestGym?.modifiers?.[stat] || 0;
+        const bonusPct = trainingBonusPct(stat);
+        const currentIndex = effectiveGymIndex(stat, currentGym);
+        const bestIndex = effectiveGymIndex(stat, bestGym);
+        const currentGain100 = estimateGainPer100E(stat, currentGym, values);
+        const bestGain100 = estimateGainPer100E(stat, bestGym, values);
         let gymAdvice = 'No gym multiplier data available.';
         if (bestGym) {
-            if (!currentGym) gymAdvice = `Best known unlocked standard option: ${bestGym.name} (${bestMod.toFixed(1)}).`;
+            if (!currentGym) gymAdvice = `Best known usable option: ${bestGym.name} (${bestMod.toFixed(1)}).`;
             else if (currentGym.name !== bestGym.name && bestMod > currentMod + .09) gymAdvice = `Switch to ${bestGym.name} for ${LABELS[stat]} if available: ${currentMod.toFixed(1)} → ${bestMod.toFixed(1)} gym multiplier.`;
             else gymAdvice = `${currentGym.name}: ${currentMod.toFixed(1)} ${LABELS[stat]} multiplier at ${currentGym.energy || '?'}E per train.`;
         }
         let futureAdvice = null;
         if (future) {
             const current = bestMod || 0;
-            const improvementPct = current > 0 ? ((future.gym.modifiers[stat] / current) - 1) * 100 : 0;
-            futureAdvice = `${future.gym.name} raises ${LABELS[stat]} efficiency ${current.toFixed(1)} → ${future.gym.modifiers[stat].toFixed(1)}${improvementPct > 0 ? ` (+${improvementPct.toFixed(0)}%)` : ''}.`;
+            const futureMod = future.gym.modifiers[stat] || 0;
+            const improvementPct = current > 0 ? ((futureMod / current) - 1) * 100 : 0;
+            const path = future.energyEstimate > 0 ? ` · up to ~${formatNumber(future.energyEstimate)}E across full remaining Wiki stage estimates` : '';
+            const condition = future.type === 'specialist' && future.check
+                ? future.check.conditional
+                    ? future.check.met === false ? ' · currently ineligible' : ' · eligibility condition tracked'
+                    : future.ratioReady ? ' · stat shape ready' : ' · stat shape still needed'
+                : '';
+            futureAdvice = `${future.gym.name} raises ${LABELS[stat]} ${current.toFixed(1)} → ${futureMod.toFixed(1)}${improvementPct > 0 ? ` (+${improvementPct.toFixed(0)}%)` : ''}${path}${condition}.`;
         }
-        return { ...rec, target: rec.target || values[stat] + rec.gain, plan, targets, currentGym, bestGym, future, gymAdvice, futureAdvice };
+        return {
+            ...rec,
+            target: rec.target || values[stat] + rec.gain,
+            plan,
+            targets,
+            currentGym,
+            bestGym,
+            future,
+            gymAdvice,
+            futureAdvice,
+            bonusPct,
+            currentIndex,
+            bestIndex,
+            currentGain100,
+            bestGain100
+        };
     }
 
     function buildPlannerModel() {
@@ -702,15 +952,22 @@
         const progressIndex = getProgressIndex(latest.activeGym);
         const targets = effectiveTargets(plan, values);
         const recommendation = buildRecommendation(plan, values, latest.activeGym, progressIndex);
-        const checks = (plan.specialists || []).map(name => specialistCheck(name, values, progressIndex, latest.activeGym?.name)).filter(Boolean);
+        const checkNames = new Set(plan.specialists || []);
+        const ssl = specialistCheck('The Sports Science Lab', values, progressIndex, latest.activeGym?.name);
+        if (ssl?.met !== false) checkNames.add('The Sports Science Lab');
+        const checks = [...checkNames].map(name => specialistCheck(name, values, progressIndex, latest.activeGym?.name)).filter(Boolean);
         return { values, total: totalBase(values), plan, progressIndex, targets, recommendation, checks };
     }
 
     function specialistStatus(check) {
         const owned = getOwnedSpecialists().includes(check.name);
-        if (check.conditional) {
-            if (check.name === 'The Sports Science Lab') return check.prereqMet ? 'CONDITIONAL' : 'FUTURE';
-            return 'INVITE ONLY';
+        if (check.name === 'Fight Club') return 'INVITE ONLY';
+        if (check.name === 'The Sports Science Lab') {
+            if (!check.drugKnown) return 'DRUG DATA UNKNOWN';
+            if (check.met === false) return 'INELIGIBLE';
+            if (!check.prereqMet) return 'FUTURE';
+            if (owned) return 'READY';
+            return 'ELIGIBLE';
         }
         if (!check.prereqMet) return 'FUTURE';
         if (!check.met) return 'SHAPE NEEDED';
@@ -719,8 +976,9 @@
     }
 
     function specialistStatusColor(status) {
-        if (status === 'READY' || status === 'RATIO READY') return '#4caf50';
-        if (status === 'SHAPE NEEDED') return '#ff9800';
+        if (['READY', 'RATIO READY', 'ELIGIBLE'].includes(status)) return '#4caf50';
+        if (['SHAPE NEEDED', 'DRUG DATA UNKNOWN'].includes(status)) return '#ff9800';
+        if (status === 'INELIGIBLE') return '#f44336';
         return '#777';
     }
 
@@ -746,8 +1004,16 @@
         const r = m.recommendation;
         const activeGym = getActiveGymDetails(latest.activeGym);
         const nextStandard = m.progressIndex < STANDARD_GYMS.length - 1 ? STANDARD_GYMS[m.progressIndex + 1] : null;
+        const currentStageEnergy = STANDARD_GYMS[m.progressIndex]?.nextEnergy || null;
         const philosophyName = PHILOSOPHY_OPTIONS.find(x => x[0] === settings.philosophy)?.[1] || settings.philosophy;
-        const totalEff = STATS.reduce((sum, s) => sum + calcEff(latest.stats[s].base, latest.stats[s].mod), 0);
+        const totalEff = STATS.reduce((sum, stat) => sum + calcEff(latest.stats[stat].base, latest.stats[stat].mod), 0);
+        const happyCurrent = currentHappy();
+        const happyMaximum = Number(latest?.bars?.happy?.maximum) || 0;
+        const owned = new Set(getOwnedSpecialists());
+        const perkEntries = latest?.trainingBonuses?.entries || [];
+        const bestPerStat = {};
+        STATS.forEach(stat => bestPerStat[stat] = knownBestGymForStat(stat, m.values, m.progressIndex, latest.activeGym?.name));
+
         let html = `<div style="font-family:Arial,sans-serif;color:#fff;">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
                 <div><div style="font-size:18px;font-weight:800;">Battle Strategy</div><div style="font-size:10px;letter-spacing:.7px;color:#777;margin-top:2px;">${escapeHtml(m.plan.name.toUpperCase())} · ${escapeHtml(philosophyName.toUpperCase())}</div></div>
@@ -763,16 +1029,24 @@
             const active = r.stat === stat;
             const trainable = m.plan.trainable[stat];
             const eff = calcEff(base, latest.stats[stat].mod);
+            const bonus = trainingBonusPct(stat);
             const status = active ? `↑ +${formatShort(r.gain)}` : trainable ? 'HOLD' : share > m.plan.ratios[stat] ? 'PASSIVE · ABOVE REF' : 'PASSIVE';
             html += `<div style="background:${active ? '#17242c' : '#1a1a1a'};border:1px solid ${active ? '#03a9f4' : '#292929'};border-radius:9px;padding:10px;min-width:0;">
-                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;"><b style="font-size:13px;">${active ? '↑ ' : ''}${LABELS[stat]}</b><b style="font-size:12px;color:${active ? '#03a9f4' : '#aaa'};">${pct(share)}</b></div>
-                <div style="font-size:11px;color:#aaa;margin-top:5px;">Base ${formatNumber(base)}</div>
-                <div style="font-size:10px;color:${latest.stats[stat].mod >= 0 ? '#4caf50' : '#f44336'};margin-top:2px;">Eff ${formatNumber(eff)}</div>
+                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;"><b style="font-size:16px;line-height:1.15;">${active ? '↑ ' : ''}${LABELS[stat]}</b><b style="font-size:12px;color:${active ? '#03a9f4' : '#aaa'};">${pct(share)}</b></div>
+                <div style="font-size:18px;font-weight:800;color:#f2f2f2;margin-top:7px;line-height:1.15;">${formatNumber(base)}</div>
+                <div style="font-size:10px;color:#777;margin-top:2px;">BASE</div>
+                <div style="font-size:15px;font-weight:800;color:${latest.stats[stat].mod >= 0 ? '#4caf50' : '#f44336'};margin-top:6px;line-height:1.15;">${formatNumber(eff)}</div>
+                <div style="font-size:9px;color:#666;margin-top:1px;">EFFECTIVE</div>
+                <div style="font-size:9px;color:${bonus > 0 ? '#8bc34a' : '#666'};margin-top:2px;">Gym bonus ${bonus >= 0 ? '+' : ''}${bonus.toFixed(1)}%</div>
                 <div style="display:flex;justify-content:space-between;gap:6px;margin-top:7px;padding-top:6px;border-top:1px solid #2c2c2c;font-size:9px;color:#707070;"><span>${trainable ? 'TARGET' : 'REF'} ${pct(trainable ? target : m.plan.ratios[stat])}</span><span style="color:${active ? '#03a9f4' : '#777'};font-weight:700;">${status}</span></div>
             </div>`;
         });
 
         html += `</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;">
+                <div style="background:#171717;border:1px solid #292929;border-radius:9px;padding:11px 9px;text-align:center;min-width:0;"><div style="font-size:10px;letter-spacing:.6px;color:#777;font-weight:700;">TOTAL BASE</div><b style="display:block;margin-top:4px;font-size:19px;line-height:1.15;overflow-wrap:anywhere;">${formatNumber(m.total)}</b></div>
+                <div style="background:#171717;border:1px solid #292929;border-radius:9px;padding:11px 9px;text-align:center;min-width:0;"><div style="font-size:10px;letter-spacing:.6px;color:#777;font-weight:700;">TOTAL EFFECTIVE</div><b style="display:block;margin-top:4px;font-size:19px;line-height:1.15;color:#03a9f4;overflow-wrap:anywhere;">${formatNumber(totalEff)}</b></div>
+            </div>
             <div style="margin-top:11px;background:#14191c;border:1px solid #27333a;border-radius:10px;padding:13px;text-align:center;">
                 <div style="font-size:9px;letter-spacing:1px;color:#777;">${escapeHtml(r.mode)}</div>
                 <div style="font-size:20px;font-weight:900;color:#03a9f4;margin-top:4px;">↑ TRAIN ${LABELS[r.stat].toUpperCase()}</div>
@@ -781,28 +1055,52 @@
                 <div style="font-size:11px;line-height:1.4;color:#aaa;margin-top:8px;">${escapeHtml(r.reason)}</div>
             </div>
             <div style="margin-top:10px;background:#171717;border:1px solid #292929;border-radius:9px;padding:11px;">
-                <div style="font-size:10px;letter-spacing:.8px;color:#777;font-weight:700;">GYM INTELLIGENCE</div>
-                ${infoRow('Current gym', activeGym ? `${activeGym.name} · ${(activeGym.modifiers?.[r.stat] || 0).toFixed(1)} ${LABELS[r.stat].slice(0,3).toUpperCase()} · ${activeGym.energy || '?'}E` : 'Not detected')}
-                ${infoRow('Best known now', r.bestGym ? `${r.bestGym.name} · ${(r.bestGym.modifiers[r.stat] || 0).toFixed(1)}` : 'Unknown')}
-                ${nextStandard ? infoRow('Next standard', `${nextStandard.name}${STANDARD_GYMS[m.progressIndex].nextEnergy ? ` · ~${formatNumber(STANDARD_GYMS[m.progressIndex].nextEnergy)}E progression estimate` : ''}`) : infoRow('Standard path', "George's reached / inferred")}
-                <div style="margin-top:7px;padding-top:7px;border-top:1px solid #292929;font-size:10px;color:#9b9b9b;line-height:1.45;">${escapeHtml(r.gymAdvice)}${r.futureAdvice ? `<br><span style="color:#c5a765;">Future: ${escapeHtml(r.futureAdvice)}</span>` : ''}</div>
+                <div style="font-size:10px;letter-spacing:.8px;color:#777;font-weight:700;">TRAINING DECISION</div>
+                ${infoRow('Train at', r.bestGym ? `${r.bestGym.name} · ${(r.bestGym.modifiers[r.stat] || 0).toFixed(1)} ${LABELS[r.stat].slice(0,3).toUpperCase()}` : 'Unknown')}
+                ${infoRow('Active gym', activeGym ? `${activeGym.name} · ${(activeGym.modifiers?.[r.stat] || 0).toFixed(1)}` : 'Not detected')}
+                ${infoRow('Detected gym bonus', `${r.bonusPct >= 0 ? '+' : ''}${r.bonusPct.toFixed(1)}% effective`)}
+                ${infoRow('Happiness', happyCurrent ? `${formatNumber(happyCurrent)}${happyMaximum ? ` / ${formatNumber(happyMaximum)}` : ''}` : 'Not detected')}
+                ${r.bestGain100 != null ? infoRow('Est. gain / 100E', `~${formatEstimate(r.bestGain100)} ${LABELS[r.stat]}`) : ''}
+                <div style="margin-top:7px;padding-top:7px;border-top:1px solid #292929;font-size:10px;color:#9b9b9b;line-height:1.45;">${escapeHtml(r.gymAdvice)}</div>
+            </div>
+            <div style="margin-top:10px;background:#171717;border:1px solid #292929;border-radius:9px;padding:11px;">
+                <div style="font-size:10px;letter-spacing:.8px;color:#777;font-weight:700;">FUTURE GYM PATH</div>
+                ${nextStandard ? infoRow('Next standard', `${nextStandard.name}${currentStageEnergy ? ` · full stage ~${formatNumber(currentStageEnergy)}E` : ''}`) : infoRow('Standard path', "George's reached / inferred")}
+                ${r.future ? infoRow('Strategic opportunity', `${r.future.gym.name} · ${(r.future.gym.modifiers[r.stat] || 0).toFixed(1)} ${LABELS[r.stat].slice(0,3).toUpperCase()}`) : infoRow('Strategic opportunity', 'No stronger known compatible gym ahead')}
+                ${r.futureAdvice ? `<div style="margin-top:7px;padding-top:7px;border-top:1px solid #292929;font-size:10px;color:#c5a765;line-height:1.45;">${escapeHtml(r.futureAdvice)}</div>` : ''}
+                <div style="font-size:9px;color:#626262;margin-top:7px;line-height:1.4;">Progression energy is based on Torn Wiki full-stage estimates. Your exact remaining Gym EXP is not exposed by the current API, so actual remaining energy may be lower.</div>
             </div>`;
 
         if (m.checks.length) {
             html += `<div style="margin-top:10px;background:#171717;border:1px solid #292929;border-radius:9px;padding:11px;"><div style="font-size:10px;letter-spacing:.8px;color:#777;font-weight:700;">SPECIALIST ROADMAP</div>`;
             m.checks.forEach(check => {
                 const status = specialistStatus(check);
-                const ratioText = check.ratio == null ? '' : ` · ${check.ratio.toFixed(2)}× / 1.25×`;
-                html += `<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #242424;font-size:10px;"><span style="color:#aaa;">${escapeHtml(check.name)}${ratioText}</span><b style="color:${specialistStatusColor(status)};white-space:nowrap;">${status}</b></div>`;
+                let detail = '';
+                if (check.name === 'The Sports Science Lab') {
+                    detail = check.drugKnown ? ` · Xanax + Ecstasy ${formatNumber(check.combinedDrugs)} / 150 max` : ' · drug count unavailable';
+                } else if (check.ratio != null) {
+                    detail = ` · ${check.ratio.toFixed(2)}× / 1.25×`;
+                }
+                const ownedMark = owned.has(check.name) ? ' · OWNED' : '';
+                html += `<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #242424;font-size:10px;"><span style="color:#aaa;">${escapeHtml(check.name)}${escapeHtml(detail)}${escapeHtml(ownedMark)}</span><b style="color:${specialistStatusColor(status)};white-space:nowrap;">${status}</b></div>`;
             });
-            html += `<div style="font-size:9px;color:#666;margin-top:7px;line-height:1.4;">“Ratio ready” means your stats meet the known stat relationship; gym ownership and other requirements can still apply.</div></div>`;
+            html += `<div style="font-size:9px;color:#666;margin-top:7px;line-height:1.4;">The planner protects or prepares known specialist stat relationships when your selected philosophy values gym efficiency.</div></div>`;
         }
 
-        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;font-size:10px;">
-                <div style="background:#171717;border:1px solid #292929;border-radius:8px;padding:9px;text-align:center;"><div style="color:#666;">TOTAL BASE</div><b style="display:block;margin-top:3px;font-size:13px;">${formatNumber(m.total)}</b></div>
-                <div style="background:#171717;border:1px solid #292929;border-radius:8px;padding:9px;text-align:center;"><div style="color:#666;">TOTAL EFFECTIVE</div><b style="display:block;margin-top:3px;font-size:13px;color:#03a9f4;">${formatNumber(totalEff)}</b></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:9px;color:#555;"><span>Gym data: ${escapeHtml(gymCatalogSource)} · Stats: ${escapeHtml(latest.stats.source)}</span><button id="bs-refresh" style="${buttonCss()}">Refresh</button></div>
+        html += `<details style="margin-top:10px;background:#151515;border:1px solid #292929;border-radius:9px;padding:10px;">
+                <summary style="cursor:pointer;font-size:10px;font-weight:700;color:#888;letter-spacing:.7px;">BEST KNOWN GYM BY STAT</summary>
+                <div style="margin-top:7px;">${STATS.map(stat => {
+                    const g = bestPerStat[stat];
+                    return infoRow(LABELS[stat], g ? `${g.name} · ${(g.modifiers[stat] || 0).toFixed(1)} · index ${effectiveGymIndex(stat, g).toFixed(2)}` : 'Unknown');
+                }).join('')}</div>
+            </details>
+            <details style="margin-top:8px;background:#151515;border:1px solid #292929;border-radius:9px;padding:10px;">
+                <summary style="cursor:pointer;font-size:10px;font-weight:700;color:#888;letter-spacing:.7px;">DETECTED TRAINING BONUSES</summary>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;">${STATS.map(stat => `<div style="background:#1b1b1b;border:1px solid #262626;border-radius:6px;padding:7px;font-size:9px;color:#777;"><b style="display:block;color:#aaa;font-size:10px;">${LABELS[stat]}</b>${trainingBonusPct(stat) >= 0 ? '+' : ''}${trainingBonusPct(stat).toFixed(1)}%</div>`).join('')}</div>
+                ${perkEntries.length ? `<div style="margin-top:8px;font-size:9px;color:#777;line-height:1.45;">${perkEntries.slice(0, 10).map(entry => `<div style="padding:3px 0;border-top:1px solid #222;"><b style="color:#888;">${escapeHtml(entry.category.toUpperCase())}</b> · ${escapeHtml(entry.text)}</div>`).join('')}${perkEntries.length > 10 ? `<div style="margin-top:4px;color:#555;">+${perkEntries.length - 10} more detected gym-gain perks</div>` : ''}</div>` : `<div style="margin-top:8px;font-size:9px;color:#666;">No percentage-based gym-gain perk strings were detected from the API.</div>`}
+                <div style="font-size:9px;color:#555;margin-top:7px;line-height:1.4;">Gain estimates use the current Torn Wiki gym formula, base battle stat, current Happiness, gym multiplier and detected gym-gain perks. Treat the result as an estimate rather than an exact train result.</div>
+            </details>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;font-size:9px;color:#555;"><span>Gym source: ${escapeHtml(gymCatalogSource)} / ${escapeHtml(WIKI_GYM_SOURCE)} · Stats: ${escapeHtml(latest.stats.source)}</span><button id="bs-refresh" style="${buttonCss()}">Refresh</button></div>
         </div>`;
 
         panel.innerHTML = html;
@@ -823,6 +1121,8 @@
         const gymOpts = [`<option value="" ${!settings.highestStandardGym ? 'selected' : ''}>Auto / inferred</option>`, ...STANDARD_GYMS.map(g => `<option value="${escapeAttr(g.name)}" ${settings.highestStandardGym === g.name ? 'selected' : ''}>${escapeHtml(g.name)}</option>`)].join('');
         const progressIndex = latest ? getProgressIndex(latest.activeGym) : 0;
         const inferredName = STANDARD_GYMS[progressIndex]?.name || 'Unknown';
+        const ownedSpecialists = new Set(getOwnedSpecialists());
+        const specialistOptions = SPECIALIST_GYMS.filter(g => g.name !== 'Fight Club');
         panel.innerHTML = `<div style="font-family:Arial,sans-serif;color:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;"><div><div style="font-size:17px;font-weight:800;">Strategy Settings</div><div style="font-size:10px;color:#777;margin-top:2px;">Choose how you want the planner to think.</div></div><button id="bs-back" style="${buttonCss()}">←</button></div>
             <label style="${labelCss()}">Combat style<select id="bs-style" style="${selectCss()}">${styleOpts}</select></label>
@@ -830,6 +1130,11 @@
             <div id="bs-lead-wrap"><label style="${labelCss()}">Lead stat<select id="bs-lead" style="${selectCss()}">${leadOpts}</select></label><div style="font-size:9px;color:#666;margin-top:4px;">Used by Baldr and as the preferred growth leader when a build reaches alignment.</div></div>
             <label style="${labelCss()}">Highest standard gym unlocked<select id="bs-progress" style="${selectCss()}">${gymOpts}</select></label>
             <div style="font-size:9px;color:#666;margin-top:4px;line-height:1.4;">Current inference: ${escapeHtml(inferredName)}. The API exposes your active gym, not your entire unlocked list, so this override improves future-gym planning.</div>
+            <div style="margin-top:13px;padding-top:11px;border-top:1px solid #292929;">
+                <div style="font-size:10px;color:#777;font-weight:700;letter-spacing:.7px;">SPECIALIST MEMBERSHIPS OWNED</div>
+                <div style="font-size:9px;color:#666;margin:4px 0 7px;line-height:1.4;">The script remembers any specialist gym it sees active. Tick others you already own so they can be used in best-gym calculations.</div>
+                ${specialistOptions.map((g, index) => `<label style="display:flex;align-items:center;gap:7px;padding:5px 0;font-size:10px;color:#aaa;"><input id="bs-owned-${index}" type="checkbox" ${ownedSpecialists.has(g.name) ? 'checked' : ''}>${escapeHtml(g.name)}</label>`).join('')}
+            </div>
             <div id="bs-custom" style="margin-top:13px;padding-top:11px;border-top:1px solid #292929;">
                 <div style="font-size:10px;color:#777;font-weight:700;letter-spacing:.7px;">CUSTOM BUILD</div>
                 <div style="font-size:9px;color:#666;margin:4px 0 8px;">Ratios are normalized automatically. Untick a stat to make it passive.</div>
@@ -867,6 +1172,9 @@
                 alert('Custom build needs at least one trainable stat.');
                 return;
             }
+            const owned = specialistOptions.filter((g, index) => document.getElementById(`bs-owned-${index}`).checked).map(g => g.name);
+            if (latest?.activeGym?.name && SPECIALIST_RULES[latest.activeGym.name] && !owned.includes(latest.activeGym.name)) owned.push(latest.activeGym.name);
+            setOwnedSpecialists(owned);
             saveSettings(next);
             renderMain();
         };
@@ -920,7 +1228,7 @@
         if (!document.getElementById('battle-toggle')) {
             const btn = document.createElement('div');
             btn.id = 'battle-toggle';
-            btn.textContent = '🏋️‍♂️';
+            btn.textContent = 'S';
             btn.title = 'Battle Strategy';
             btn.style.cssText = 'position:fixed;bottom:400px;right:2px;width:28px;height:40px;background:#03a9f4;color:#fff;display:flex;align-items:center;justify-content:center;border-radius:6px;font:700 18px Arial,sans-serif;cursor:pointer;z-index:99999;box-shadow:0 0 10px rgba(0,0,0,.4);user-select:none;';
             btn.onclick = toggleOverlay;
