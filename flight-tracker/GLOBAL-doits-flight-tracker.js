@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.4 - Auth Recovery
+// @name         1 Doits Flight Tracker v18.4.5 - Account Tools
 // @namespace    https://github.com/your-repo
-// @version      18.4.4
-// @description  Private Cloudflare travel tracker with faction applications, desktop/mobile UI, built-in welcome and help, threat awareness, recovery, and admin management
+// @version      18.4.5
+// @description  Private Cloudflare travel tracker with faction applications, desktop/mobile UI, built-in welcome and help, threat awareness, recovery, account tools, and admin management
 // @author       Doitsburger
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -2289,7 +2289,7 @@
       .tt-pending-line:last-child { border-bottom:0; }
 
 
-      /* v18.4.4 - admin-matched universal onboarding + Global Pool state + resilient auth recovery */
+      /* v18.4.5 - admin-matched universal onboarding + Global Pool state + resilient auth recovery */
       #travel-panel .tt-onboard-shell,
       #travel-panel .tt-onboard-shell * { box-sizing:border-box; }
       #travel-panel .tt-onboard-shell { min-height:100%;display:flex;flex-direction:column;text-align:left;color:#F5F5F5 !important;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif !important;font-size:12px !important;line-height:1.35 !important; }
@@ -2513,6 +2513,7 @@
               <p>When you are abroad, a faint compact &#128680; alert sits at the top-left when a stronger OPPONENT is present or inbound to your country. Tap it to open the fully visible threat panel with each opponent's battle-stat estimate and live arrival countdown window.</p>`),
             renderHelpSection('account', 'ACCOUNT & FACTION ACCESS', `
               <p><strong>ACCOUNT</strong> shows your tracker identity, current access type/status and your current Torn faction's tracker-registration state.</p>
+              <p>Use <strong>CHANGE API KEY</strong> if you entered the wrong Torn API key or want to refresh the saved one. Use <strong>FORGET ACCOUNT</strong> when you want to remove this browser's linked tracker account and start again.</p>
               <p>If your current faction is not registered, you can apply from the Account screen. The tracker confirms the faction from your authenticated account; you do not manually choose a faction ID.</p>
               <p>Applications can be <strong>PENDING</strong>, <strong>NEEDS INFO</strong>, <strong>APPROVED</strong> or <strong>DECLINED</strong>. If the admin requests information, reply inside the application thread.</p>
               <p>Once a faction is registered, its members can receive automatic faction access when they connect their own eligible Torn API key.</p>`),
@@ -2538,7 +2539,7 @@
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.4</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.5</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -2743,10 +2744,18 @@
           <div class="tt-account-row"><span>Current faction</span><strong>${escapeHtml(factionName)}</strong></div>
         </div>
         <div class="tt-account-card">
+          <div class="tt-account-title">Account Tools</div>
+          <div class="tt-app-copy">Need to correct setup? Change the saved Torn API key without unlinking this tracker account, or forget this browser's linked account and start over.</div>
+          <div class="tt-admin-card-actions" style="margin-top:10px;">
+            <button id="tt-account-change-api" class="tt-admin-action tt-admin-action--good">CHANGE API KEY</button>
+            <button id="tt-account-forget" class="tt-admin-action tt-admin-action--danger">FORGET ACCOUNT</button>
+          </div>
+        </div>
+        <div class="tt-account-card">
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.4</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.5</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -2755,6 +2764,17 @@
         document.getElementById('tt-account-back')?.addEventListener('click', () => {
             state.panelMode = 'factions';
             updatePanelContent();
+        });
+
+        document.getElementById('tt-account-change-api')?.addEventListener('click', async () => {
+            const ok = await configureTrackerApiKey();
+            if (ok && state.panelVisible && state.panelMode === 'account') updatePanelContent();
+        });
+
+        document.getElementById('tt-account-forget')?.addEventListener('click', () => {
+            if (!confirm('Forget this linked tracker account from this browser and return to setup?')) return;
+            clearTrackerCredentials();
+            if (state.panelVisible) updatePanelContent();
         });
 
         document.getElementById('tt-faction-application-refresh')?.addEventListener('click', async () => {
@@ -2950,7 +2970,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.4</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.5</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -4383,7 +4403,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.4</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.5</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4416,7 +4436,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.4</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.5</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4510,7 +4530,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.4</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.5</span></div>
         </div>`;
     }
 
@@ -4561,7 +4581,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.4</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.5</span></div>
             </div>`;
         }
 
@@ -4595,7 +4615,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.4</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.5</span></div>
         </div>`;
     }
 
@@ -4753,7 +4773,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.4</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.5</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
