@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.10 - Gist Abroad Identity
+// @name         1 Doits Flight Tracker v18.4.11 - Fallback First-Run Recognition
 // @namespace    https://github.com/your-repo
-// @version      18.4.10
-// @description  Private travel tracker with fullscreen travel view, scrolling main header, a first-class Abroad main tab, Gist-safe own-faction identity recovery, Cloudflare -> local Termux -> GitHub Gist failover, fallback faction watch control, threat awareness, account tools, and admin management
+// @version      18.4.11
+// @description  Private travel tracker with first-run Torn identity recognition during Cloud outages, fullscreen travel view, main Abroad tab, Cloudflare -> Termux -> Gist failover, fallback faction watch control, threat awareness, account tools, and admin management
 // @author       Doitsburger + Grok
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -14,6 +14,7 @@
 // @connect      127.0.0.1
 // @connect      localhost
 // @connect      gist.githubusercontent.com
+// @connect      api.torn.com
 // ==/UserScript==
 
 (function () {
@@ -257,6 +258,130 @@
         if (state.myUserID) GM_setValue('trackerMyUserID', String(state.myUserID));
         if (state.myFactionID) GM_setValue('trackerMyFactionID', String(state.myFactionID));
         if (state.myFactionName) GM_setValue('trackerMyFactionName', String(state.myFactionName));
+    }
+
+    function isEmergencyFallbackSource() {
+        return state.dataSource === 'local' || state.dataSource === 'gist';
+    }
+
+    function hasFallbackIdentitySession() {
+        if (!isEmergencyFallbackSource()) return false;
+
+        const userId = String(state.myUserID || '').trim();
+        const factionId = String(state.myFactionID || '').trim();
+
+        return !!(
+            userId &&
+            factionId &&
+            state.watchedFactions?.[factionId]
+        );
+    }
+
+    function fetchTornKeyIdentity(apiKey, timeout = 8000) {
+        const key = String(apiKey || '').trim();
+
+        if (!key) return Promise.reject(new Error('Enter your Torn API key.'));
+
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: 'https://api.torn.com/v2/key/info?key=' + encodeURIComponent(key),
+                headers: { 'Accept': 'application/json' },
+                timeout,
+                onload: response => {
+                    let body = null;
+                    try { body = JSON.parse(response.responseText || '{}'); } catch (e) {}
+
+                    if (response.status < 200 || response.status >= 300) {
+                        reject(new Error(body?.error?.error || body?.error?.message || body?.error || ('Torn API HTTP ' + response.status)));
+                        return;
+                    }
+
+                    if (body?.error) {
+                        reject(new Error(body.error.error || body.error.message || String(body.error)));
+                        return;
+                    }
+
+                    const info = body?.info && typeof body.info === 'object' ? body.info : body;
+                    const user = info?.user || body?.user || {};
+                    const userId = user?.id ?? user?.user_id ?? user?.player_id ?? info?.user_id ?? body?.user_id ?? null;
+                    const factionId = user?.faction_id ?? user?.factionId ?? info?.faction_id ?? body?.faction_id ?? null;
+
+                    if (userId == null || !/^\d+$/.test(String(userId))) {
+                        reject(new Error('Torn could not identify the owner of this API key.'));
+                        return;
+                    }
+
+                    resolve({
+                        userId: String(userId),
+                        factionId: factionId == null || String(factionId) === '0' ? null : String(factionId)
+                    });
+                },
+                onerror: () => reject(new Error('Torn API could not be reached for fallback identity check.')),
+                ontimeout: () => reject(new Error('Torn API identity check timed out.'))
+            });
+        });
+    }
+
+    async function activateFallbackIdentityWithApiKey(apiKey) {
+        const identity = await fetchTornKeyIdentity(apiKey);
+        const fallback = await fetchEmergencyState(true);
+
+        // Load the shared emergency snapshot first, then apply THIS user's Torn
+        // identity. The Gist owner's myUserID/myFactionID is never trusted.
+        applyTrackerPayload(fallback.data, fallback.source, fallback.updatedAt);
+
+        state.myUserID = identity.userId;
+
+        let factionId = String(identity.factionId || '').trim();
+
+        // key/info is authoritative for current faction membership. If Torn did not
+        // return a faction for any reason, the roster can still recover it by XID.
+        if (!factionId || !state.watchedFactions?.[factionId]) {
+            factionId = '';
+            for (const fid in state.watchedFactions || {}) {
+                if (state.watchedFactions[fid]?.members?.[identity.userId]) {
+                    factionId = String(fid);
+                    break;
+                }
+            }
+        }
+
+        if (!factionId) {
+            throw new Error('Torn identified your account, but your current faction is not available in the emergency fallback snapshot.');
+        }
+
+        if (!state.watchedFactions?.[factionId]) {
+            throw new Error('Your Torn faction (' + factionId + ') is not currently included in the emergency fallback snapshot.');
+        }
+
+        state.myFactionID = factionId;
+        state.myFactionName = state.watchedFactions[factionId]?.name || ('Faction ' + factionId);
+
+        const member = state.watchedFactions[factionId]?.members?.[identity.userId];
+        const playerName = String(member?.playerName || member?.name || '').trim();
+        if (playerName) {
+            state.trackerLabel = playerName;
+            GM_setValue('trackerLabel', playerName);
+        }
+
+        state.authenticated = true;
+        state.apiKeySet = true;
+        state.serverOnline = true;
+        state.authRejected = false;
+        state.authReconnecting = false;
+        state.fallbackLastError = null;
+        rememberTrackerIdentity();
+        sanitizeOpponentFactions();
+        updateTrackerStatusDot();
+
+        return {
+            source: fallback.source,
+            userId: state.myUserID,
+            factionId: state.myFactionID,
+            factionName: state.myFactionName,
+            playerName: playerName || ('User ' + state.myUserID)
+        };
     }
 
     function resolveOwnFactionFromAvailableState() {
@@ -1004,11 +1129,35 @@
 
             if (state.panelVisible) updatePanelContent();
             return true;
-        } catch (e) {
-            apiKey = '';
-            const message = String(e?.message || 'Registration failed');
-            if (errorEl) errorEl.textContent = message;
-            return false;
+        } catch (cloudError) {
+            try {
+                if (submitBtn) submitBtn.textContent = 'TRYING FALLBACK...';
+
+                const fallbackIdentity = await activateFallbackIdentityWithApiKey(apiKey);
+                const sourceName = fallbackIdentity.source === 'local' ? 'Termux' : 'Gist';
+
+                keyInput.value = '';
+                apiKey = '';
+
+                if (errorEl) {
+                    errorEl.style.color = '#A5D6A7';
+                    errorEl.textContent = `Cloud unavailable - ${sourceName} fallback active as ${fallbackIdentity.playerName} / ${fallbackIdentity.factionName}.`;
+                }
+
+                state.panelMode = 'factions';
+                if (state.panelVisible) updatePanelContent();
+                return true;
+            } catch (fallbackError) {
+                keyInput.value = '';
+                apiKey = '';
+                const cloudMessage = String(cloudError?.message || 'Cloud registration failed');
+                const fallbackMessage = String(fallbackError?.message || 'Fallback identity check failed');
+                if (errorEl) {
+                    errorEl.style.color = '';
+                    errorEl.textContent = cloudMessage + ' | Fallback: ' + fallbackMessage;
+                }
+                return false;
+            }
         } finally {
             state.registrationBusy = false;
             if (submitBtn) {
@@ -1839,15 +1988,38 @@
 
     async function pollServer(options = {}) {
         if (!hasTrackerCredentials()) {
-            state.authenticated = false;
-            state.apiKeySet = false;
-            state.serverOnline = true;
-            state.dataSource = 'cloud';
             state.authFailureCount = 0;
             state.authReconnecting = false;
             state.authRejected = false;
+
+            try {
+                const result = await fetchEmergencyState(options.forceCloudRetry === true);
+                applyTrackerPayload(result.data, result.source, result.updatedAt);
+                resolveOwnFactionFromAvailableState();
+
+                if (hasFallbackIdentitySession()) {
+                    state.authenticated = true;
+                    state.apiKeySet = true;
+                    state.serverOnline = true;
+                } else {
+                    // The shared Gist may be reachable before a first-run user has
+                    // identified themselves. Keep setup visible until their Torn key
+                    // verifies XID + faction.
+                    state.authenticated = false;
+                    state.apiKeySet = false;
+                    state.serverOnline = true;
+                }
+            } catch (fallbackError) {
+                state.authenticated = false;
+                state.apiKeySet = false;
+                state.serverOnline = true;
+                state.dataSource = 'cloud';
+                state.fallbackLastError = fallbackError.message;
+            }
+
             updateTrackerStatusDot();
             syncReconnectIndicator();
+            if (state.panelVisible) updatePanelContent();
             return;
         }
 
@@ -2885,7 +3057,7 @@
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.10</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.11</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -3106,7 +3278,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.10</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.11</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -3321,7 +3493,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.10</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.11</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -4805,7 +4977,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.10</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.11</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4838,7 +5010,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.10</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.11</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4894,7 +5066,7 @@
               <div class="tt-onboard-mark">&#9992;&#65039;</div>
               <div>
                 <div class="tt-onboard-brand-title">Doits Flight Tracker</div>
-                <div class="tt-onboard-brand-sub">Secure Cloud access</div>
+                <div class="tt-onboard-brand-sub">Cloud + emergency fallback</div>
               </div>
             </div>
             <div class="tt-onboard-header-actions">
@@ -4907,7 +5079,7 @@
             <div class="tt-onboard-section-head">
               <div>
                 <div class="tt-onboard-eyebrow">CONNECT THIS INSTALLATION</div>
-                <div class="tt-onboard-copy">Enter your Torn API key. That is the only setup step.</div>
+                <div class="tt-onboard-copy">Enter your Torn API key. If Cloud is down, it will identify your account directly with Torn and open the emergency fallback.</div>
               </div>
             </div>
 
@@ -4919,20 +5091,20 @@
                 <div class="tt-onboard-info-icon">&#10003;</div>
                 <div>
                   <div class="tt-onboard-info-title">AUTOMATIC ACCOUNT CHECK</div>
-                  <div class="tt-onboard-info-copy">Approved faction: instant access. Existing tracker account: this installation links automatically. Otherwise, an approval request is sent to the tracker admin.</div>
+                  <div class="tt-onboard-info-copy">Approved faction: instant Cloud access. During a Cloud outage, your key is checked directly with Torn for your XID and faction; if that faction is in the emergency snapshot, Gist fallback opens immediately.</div>
                 </div>
               </div>
 
               <div id="tt-registration-error" class="tt-onboard-error"></div>
               <button id="tt-register-universal" class="tt-onboard-primary">CONNECT ACCOUNT</button>
-              <div class="tt-onboard-security">No Client ID or tracker secret to copy. Your Torn identity and faction are verified from the API key. The key must also be registered with FFScouter.</div>
+              <div class="tt-onboard-security">No Client ID or tracker secret to copy. During fallback, the raw API key is used only for the one-time Torn identity check and is not saved by this userscript. The key must also be registered with FFScouter.</div>
             </div>
 
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot tt-onboard-note-dot--approved"></span><span>Returning user? Use the same Torn API key and this installation will be linked to your existing tracker account automatically.</span></div>
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.10</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.11</span></div>
         </div>`;
     }
 
@@ -4983,7 +5155,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.10</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.11</span></div>
             </div>`;
         }
 
@@ -5017,7 +5189,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.10</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.11</span></div>
         </div>`;
     }
 
@@ -5040,7 +5212,7 @@
 
         queueMicrotask(syncReconnectIndicator);
 
-        if (!hasTrackerCredentials()) {
+        if (!hasTrackerCredentials() && !hasFallbackIdentitySession()) {
             panel.innerHTML = renderUniversalSetupScreen();
             bindUniversalSetupScreen();
             return;
@@ -5171,7 +5343,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.10</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.11</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
