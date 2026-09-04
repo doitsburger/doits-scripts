@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.5 - Account Tools
+// @name         1 Doits Flight Tracker v18.4.6 - Termux + Gist Failover
 // @namespace    https://github.com/your-repo
-// @version      18.4.5
-// @description  Private Cloudflare travel tracker with faction applications, desktop/mobile UI, built-in welcome and help, threat awareness, recovery, account tools, and admin management
-// @author       Doitsburger
+// @version      18.4.6
+// @description  Private travel tracker with automatic Cloudflare -> local Termux -> GitHub Gist emergency failover, plus faction applications, threat awareness, recovery, account tools, and admin management
+// @author       Doitsburger + Grok
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -11,6 +11,9 @@
 // @grant        GM_notification
 // @run-at       document-end
 // @connect      doits-flight-tracker-relay.ezekeo.workers.dev
+// @connect      127.0.0.1
+// @connect      localhost
+// @connect      gist.githubusercontent.com
 // ==/UserScript==
 
 (function () {
@@ -18,7 +21,12 @@
 
     // ==================== CONFIG ====================
     const CLOUD_SERVER = 'https://doits-flight-tracker-relay.ezekeo.workers.dev';
+    const LOCAL_FALLBACK_SERVER = 'http://127.0.0.1:3000';
+    const GIST_FALLBACK_URL = 'https://gist.githubusercontent.com/doitsburger/f6146b9fc97ed168fecd84a4ea3ea8d2/raw/travel-state.json';
     const CLOUD_POLL_INTERVAL = 5000;
+    const FALLBACK_FETCH_INTERVAL = 15000;
+    const FALLBACK_CLOUD_RETRY_INTERVAL = 30000;
+    const FALLBACK_STALE_AFTER_MS = 3 * 60 * 1000;
     const ACCESS_POLL_INTERVAL = 30000;
     const ADMIN_POLL_INTERVAL = 30000;
     const PANEL_UPDATE_INTERVAL = 250;
@@ -137,6 +145,9 @@
     let myBattleStats = null;
     let pollTimer = null;
     let authConfirmPromise = null;
+    let fallbackCache = null;
+    let fallbackCacheAt = 0;
+    let fallbackCacheSource = null;
 
     let state = {
         apiKeySet: false,
@@ -157,6 +168,10 @@
         warFactions: new Set(),
         lastPollTime: 0,
         serverOnline: true,
+        dataSource: 'cloud',
+        fallbackUpdatedAt: 0,
+        fallbackLastError: null,
+        lastCloudRetryAt: 0,
         authFailureCount: 0,
         authReconnecting: false,
         authRejected: false,
@@ -631,6 +646,13 @@
         state.authFailureCount = 0;
         state.authReconnecting = false;
         state.authRejected = false;
+        state.dataSource = 'cloud';
+        state.fallbackUpdatedAt = 0;
+        state.fallbackLastError = null;
+        state.lastCloudRetryAt = 0;
+        fallbackCache = null;
+        fallbackCacheAt = 0;
+        fallbackCacheSource = null;
         authConfirmPromise = null;
         state.registrationBusy = false;
         state.pendingActivationBusy = false;
@@ -699,6 +721,93 @@
 
             GM_xmlhttpRequest(opts);
         });
+    }
+
+    function fallbackRequest(url, timeout = 6000) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+                timeout,
+                onload: response => {
+                    if (response.status < 200 || response.status >= 300) {
+                        const error = new Error('Fallback HTTP ' + response.status);
+                        error.status = response.status;
+                        reject(error);
+                        return;
+                    }
+                    try {
+                        resolve(JSON.parse(response.responseText || '{}'));
+                    } catch (e) {
+                        reject(new Error('Fallback returned invalid JSON'));
+                    }
+                },
+                onerror: () => reject(new Error('Fallback could not be reached')),
+                ontimeout: () => reject(new Error('Fallback request timed out'))
+            });
+        });
+    }
+
+    function getFallbackTimestamp(data) {
+        const scanTime = Number(data?.lastScanTime || 0);
+        if (Number.isFinite(scanTime) && scanTime > 0) return scanTime;
+        const updated = Date.parse(String(data?.updated || ''));
+        return Number.isFinite(updated) ? updated : 0;
+    }
+
+    function validateFallbackState(data, source) {
+        if (!data || typeof data !== 'object' || !data.factions || typeof data.factions !== 'object') {
+            throw new Error(source + ' fallback has no faction state');
+        }
+        const updatedAt = getFallbackTimestamp(data);
+        if (!updatedAt) throw new Error(source + ' fallback has no update timestamp');
+        const age = Date.now() - updatedAt;
+        if (age > FALLBACK_STALE_AFTER_MS) {
+            throw new Error(source + ' fallback is stale (' + Math.round(age / 1000) + 's old)');
+        }
+        return updatedAt;
+    }
+
+    async function fetchLocalFallbackState() {
+        const data = await fallbackRequest(LOCAL_FALLBACK_SERVER + '/api/state', 2200);
+        const updatedAt = validateFallbackState(data, 'Local');
+        return { source: 'local', data, updatedAt };
+    }
+
+    async function fetchGistFallbackState() {
+        const separator = GIST_FALLBACK_URL.includes('?') ? '&' : '?';
+        const url = GIST_FALLBACK_URL + separator + 'tt=' + Math.floor(Date.now() / FALLBACK_FETCH_INTERVAL);
+        const data = await fallbackRequest(url, 6500);
+        const updatedAt = validateFallbackState(data, 'Gist');
+        return { source: 'gist', data, updatedAt };
+    }
+
+    async function fetchEmergencyState(force = false) {
+        if (!force && fallbackCache && Date.now() - fallbackCacheAt < FALLBACK_FETCH_INTERVAL) {
+            return { source: fallbackCacheSource, data: fallbackCache, updatedAt: getFallbackTimestamp(fallbackCache) };
+        }
+
+        let localError = null;
+        try {
+            const result = await fetchLocalFallbackState();
+            fallbackCache = result.data;
+            fallbackCacheAt = Date.now();
+            fallbackCacheSource = result.source;
+            return result;
+        } catch (e) {
+            localError = e;
+        }
+
+        try {
+            const result = await fetchGistFallbackState();
+            fallbackCache = result.data;
+            fallbackCacheAt = Date.now();
+            fallbackCacheSource = result.source;
+            return result;
+        } catch (gistError) {
+            throw new Error('Local: ' + (localError?.message || 'unavailable') + ' | Gist: ' + gistError.message);
+        }
     }
 
     async function registerUniversalTracker() {
@@ -1025,9 +1134,21 @@
         const dot = document.getElementById('travel-tracker-status');
         if (!dot) return;
 
+        if (state.dataSource === 'local' && state.serverOnline) {
+            dot.className = 'tt-dot tt-dot--local';
+            dot.title = 'Local Termux fallback active';
+            return;
+        }
+
+        if (state.dataSource === 'gist' && state.serverOnline) {
+            dot.className = 'tt-dot tt-dot--gist';
+            dot.title = 'GitHub Gist fallback active';
+            return;
+        }
+
         if (!state.serverOnline) {
             dot.className = 'tt-dot tt-dot--offline';
-            dot.title = 'Cloud tracker unavailable';
+            dot.title = 'Tracker unavailable';
             return;
         }
 
@@ -1044,7 +1165,7 @@
         }
 
         dot.className = state.apiKeySet ? 'tt-dot tt-dot--online' : 'tt-dot tt-dot--apikey';
-        dot.title = state.apiKeySet ? 'Tracker online' : 'Tracker setup required';
+        dot.title = state.apiKeySet ? 'Cloud tracker online' : 'Tracker setup required';
     }
 
     function markAuthenticationHealthy() {
@@ -1053,6 +1174,8 @@
         state.authRejected = false;
         state.registrationAccessLost = false;
         state.serverOnline = true;
+        state.dataSource = 'cloud';
+        state.fallbackLastError = null;
         if (hasTrackerCredentials()) state.authenticated = true;
         updateTrackerStatusDot();
         syncReconnectIndicator();
@@ -1495,71 +1618,42 @@
         }
     }
 
-    async function pollServer(options = {}) {
-        if (!hasTrackerCredentials()) {
-            state.authenticated = false;
-            state.apiKeySet = false;
-            state.serverOnline = true;
-            state.authFailureCount = 0;
-            state.authReconnecting = false;
-            state.authRejected = false;
-            updateTrackerStatusDot();
-            syncReconnectIndicator();
-            return;
+    function applyTrackerPayload(data, source = 'cloud', updatedAt = 0) {
+        const isCloud = source === 'cloud';
+        const isLocal = source === 'local';
+
+        state.authenticated = true;
+        state.apiKeySet = isCloud ? !!data.myUserID : true;
+        state.lastPollTime = Date.now();
+        state.serverOnline = true;
+        state.dataSource = source;
+        state.fallbackUpdatedAt = isCloud ? 0 : Number(updatedAt || getFallbackTimestamp(data) || Date.now());
+        state.fallbackLastError = null;
+        state.authReconnecting = false;
+
+        if (isCloud || isLocal) {
+            state.myUserID = data.myUserID ? String(data.myUserID) : state.myUserID;
+            state.myFactionID = data.myFactionID ? String(data.myFactionID) : state.myFactionID;
+            state.myFactionName = data.myFactionName || state.myFactionName;
+            state.myDestination = data.myDestination ?? state.myDestination;
+            state.myTravelArrival = data.myTravelArrival == null ? state.myTravelArrival : Number(data.myTravelArrival);
+        } else {
+            if (!state.myUserID) state.myUserID = getMyTornUserId();
+            const localFaction = getMyFactionDetails();
+            if (!state.myFactionID && localFaction.id) state.myFactionID = String(localFaction.id);
+            if (!state.myFactionName && localFaction.name) state.myFactionName = localFaction.name;
         }
 
-        try {
-            let access = state.accessInfo;
+        sanitizeOpponentFactions();
+        state.watchedFactions = {};
+        for (const fid in data.factions || {}) {
+            state.watchedFactions[fid] = {
+                name: data.factions[fid].name || 'Faction ' + fid,
+                members: data.factions[fid].members || {}
+            };
+        }
 
-            try {
-                access = await refreshAccessStatus(false);
-            } catch (accessError) {
-                throw accessError;
-            }
-
-            if (access && (access.accessType === 'pending' || access.accessStatus === 'pending')) {
-                setRegistrationPending(true);
-                markAuthenticationHealthy();
-                state.authenticated = true;
-                state.apiKeySet = true;
-                state.serverOnline = true;
-                state.lastPollTime = Date.now();
-                state.myUserID = access.tornUserId ? String(access.tornUserId) : state.myUserID;
-
-                if (access.personalAccessReady === true && !options.skipPendingAutoActivate) {
-                    await activateApprovedPersonalAccess({ silent: true });
-                    return;
-                }
-
-                const pendingDot = document.getElementById('travel-tracker-status');
-                if (pendingDot) pendingDot.className = 'tt-dot tt-dot--apikey';
-                if (state.panelVisible) updatePanelContent();
-                return;
-            }
-
-            if (state.registrationPending) setRegistrationPending(false);
-
-            const data = await fetchState();
-            markAuthenticationHealthy();
-            state.authenticated = true;
-            state.apiKeySet = !!data.myUserID;
-            state.lastPollTime = Date.now();
-            state.serverOnline = true;
-            state.myUserID = data.myUserID ? String(data.myUserID) : null;
-            state.myFactionID = data.myFactionID ? String(data.myFactionID) : null;
-            state.myFactionName = data.myFactionName || null;
-            sanitizeOpponentFactions();
-            state.myDestination = data.myDestination || null;
-            state.myTravelArrival = data.myTravelArrival == null ? null : Number(data.myTravelArrival);
-            state.watchedFactions = {};
-
-            for (const fid in data.factions || {}) {
-                state.watchedFactions[fid] = {
-                    name: data.factions[fid].name || 'Faction ' + fid,
-                    members: data.factions[fid].members || {}
-                };
-            }
-
+        if (isCloud) {
             const incomingIndividuals = data.individuals || {};
             for (const xid of [...state.pendingTrackedIds]) {
                 if (incomingIndividuals[xid]) {
@@ -1582,59 +1676,136 @@
                 }
             }
             state.trackedIndividuals = incomingIndividuals;
+        }
 
-            myBattleStats = null;
-            const myId = String(state.myUserID || '');
-            if (myId) {
-                for (const fid in state.watchedFactions) {
-                    const me = state.watchedFactions[fid]?.members?.[myId];
-                    if (me?.tbs != null) {
-                        myBattleStats = Number(me.tbs);
-                        break;
-                    }
+        myBattleStats = null;
+        const myId = String(state.myUserID || '');
+        if (myId) {
+            for (const fid in state.watchedFactions) {
+                const me = state.watchedFactions[fid]?.members?.[myId];
+                if (me?.tbs != null) {
+                    myBattleStats = Number(me.tbs);
+                    break;
                 }
-                if (!myBattleStats && state.trackedIndividuals[myId]?.tbs != null) myBattleStats = Number(state.trackedIndividuals[myId].tbs);
+            }
+            if (!myBattleStats && state.trackedIndividuals[myId]?.tbs != null) myBattleStats = Number(state.trackedIndividuals[myId].tbs);
+        }
+
+        const notificationSources = { ...state.watchedFactions };
+        const standaloneTracked = getStandaloneTrackedIndividuals();
+        if (Object.keys(standaloneTracked).length) notificationSources.__tracked__ = { name: 'Tracked players', members: standaloneTracked };
+
+        detectNewFlights(notificationSources);
+        detectLandingAlerts(notificationSources);
+        updateThreatOverlay();
+
+        state.previousMembers = {};
+        for (const fid in notificationSources) state.previousMembers[fid] = JSON.parse(JSON.stringify(notificationSources[fid]?.members || {}));
+
+        updateTrackerStatusDot();
+        if (state.panelVisible) {
+            const panel = document.getElementById('travel-panel');
+            const scrollTop = panel ? panel.scrollTop : 0;
+            updatePanelContent();
+            if (panel) panel.scrollTop = scrollTop;
+            updateLiveTimers();
+        }
+    }
+
+    async function useEmergencyFallback(force = false) {
+        const result = await fetchEmergencyState(force);
+        applyTrackerPayload(result.data, result.source, result.updatedAt);
+        return result.source;
+    }
+
+    async function pollServer(options = {}) {
+        if (!hasTrackerCredentials()) {
+            state.authenticated = false;
+            state.apiKeySet = false;
+            state.serverOnline = true;
+            state.dataSource = 'cloud';
+            state.authFailureCount = 0;
+            state.authReconnecting = false;
+            state.authRejected = false;
+            updateTrackerStatusDot();
+            syncReconnectIndicator();
+            return;
+        }
+
+        const now = Date.now();
+        const fallbackActive = state.dataSource === 'local' || state.dataSource === 'gist';
+        const cloudRetryDue = options.forceCloudRetry === true || !fallbackActive || now - state.lastCloudRetryAt >= FALLBACK_CLOUD_RETRY_INTERVAL;
+
+        if (fallbackActive && !cloudRetryDue) {
+            try {
+                await useEmergencyFallback(false);
+                return;
+            } catch (fallbackError) {
+                state.fallbackLastError = fallbackError.message;
+            }
+        }
+
+        try {
+            state.lastCloudRetryAt = Date.now();
+            let access = state.accessInfo;
+            access = await refreshAccessStatus(false);
+
+            if (access && (access.accessType === 'pending' || access.accessStatus === 'pending')) {
+                setRegistrationPending(true);
+                markAuthenticationHealthy();
+                state.authenticated = true;
+                state.apiKeySet = true;
+                state.serverOnline = true;
+                state.dataSource = 'cloud';
+                state.lastPollTime = Date.now();
+                state.myUserID = access.tornUserId ? String(access.tornUserId) : state.myUserID;
+
+                if (access.personalAccessReady === true && !options.skipPendingAutoActivate) {
+                    await activateApprovedPersonalAccess({ silent: true });
+                    return;
+                }
+
+                const pendingDot = document.getElementById('travel-tracker-status');
+                if (pendingDot) pendingDot.className = 'tt-dot tt-dot--apikey';
+                if (state.panelVisible) updatePanelContent();
+                return;
             }
 
-            const notificationSources = { ...state.watchedFactions };
-            const standaloneTracked = getStandaloneTrackedIndividuals();
-            if (Object.keys(standaloneTracked).length) notificationSources.__tracked__ = { name: 'Tracked players', members: standaloneTracked };
-
-            detectNewFlights(notificationSources);
-            detectLandingAlerts(notificationSources);
-            updateThreatOverlay();
-
-            state.previousMembers = {};
-            for (const fid in notificationSources) state.previousMembers[fid] = JSON.parse(JSON.stringify(notificationSources[fid]?.members || {}));
+            if (state.registrationPending) setRegistrationPending(false);
+            const data = await fetchState();
+            markAuthenticationHealthy();
+            applyTrackerPayload(data, 'cloud', 0);
 
             try {
                 await refreshAccessStatus(false);
-                if (state.panelVisible && state.panelMode === 'account') {
-                    await refreshFactionApplication(false);
-                }
+                if (state.panelVisible && state.panelMode === 'account') await refreshFactionApplication(false);
                 if (isAdminUser()) await refreshAdminRequests(false);
             } catch (e) {}
-
-            updateTrackerStatusDot();
-
-            if (state.panelVisible) {
-                const panel = document.getElementById('travel-panel');
-                const scrollTop = panel ? panel.scrollTop : 0;
-                updatePanelContent();
-                if (panel) panel.scrollTop = scrollTop;
-                updateLiveTimers();
-            }
         } catch (e) {
             if (e.status === 401) {
                 await confirmAuthenticationAfter401();
-            } else {
-                state.authReconnecting = false;
+                updateTrackerStatusDot();
+                syncReconnectIndicator();
+                if (state.panelVisible) updatePanelContent();
+                return;
+            }
+
+            state.authReconnecting = false;
+            try {
+                await useEmergencyFallback(true);
+                state.authenticated = true;
+                state.serverOnline = true;
+                state.fallbackLastError = null;
+                syncReconnectIndicator();
+                return;
+            } catch (fallbackError) {
+                state.dataSource = 'offline';
                 state.serverOnline = false;
+                state.fallbackLastError = fallbackError.message;
             }
 
             updateTrackerStatusDot();
             syncReconnectIndicator();
-
             if (state.panelVisible) updatePanelContent();
         }
     }
@@ -2185,6 +2356,7 @@
       .tt-dot--online { background:var(--tt-success); }
       .tt-dot--offline { background:var(--tt-danger); }
       .tt-dot--apikey { background:var(--tt-warning); }
+      .tt-dot--local { background:#FF9800; }
       .tt-dot--gist { background:#9C27B0; }
 
       .tt-watch-btn { background:none;border:1px solid rgba(255,255,255,0.15);border-radius:999px;color:#fff;cursor:pointer;padding:8px 14px;font-size:13px;font-weight:600;touch-action:manipulation; }
@@ -2539,7 +2711,7 @@
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.5</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.6</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -2755,7 +2927,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.5</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.6</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -2970,7 +3142,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.5</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.6</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -3140,6 +3312,20 @@
             <button class="tt-main-mode-tab ${state.panelMode === 'factions' ? 'active' : ''}" data-panel-mode="factions">FACTIONS</button>
             <button class="tt-main-mode-tab ${state.panelMode === 'individuals' ? 'active' : ''}" data-panel-mode="individuals">INDIVIDUALS</button>
         </div>`;
+    }
+
+    function getTrackerSourceDisplay() {
+        if (state.dataSource === 'local') return { label: 'LOCAL FALLBACK', dotClass: 'tt-dot--local' };
+        if (state.dataSource === 'gist') return { label: 'GIST FALLBACK', dotClass: 'tt-dot--gist' };
+        return { label: 'CLOUD', dotClass: 'tt-dot--online' };
+    }
+
+    function renderFallbackNotice() {
+        if (state.dataSource !== 'local' && state.dataSource !== 'gist') return '';
+        const source = state.dataSource === 'local' ? 'LOCAL TERMUX' : 'GITHUB GIST';
+        const ageSeconds = state.fallbackUpdatedAt ? Math.max(0, Math.round((Date.now() - state.fallbackUpdatedAt) / 1000)) : null;
+        const age = ageSeconds === null ? '' : ' • data ' + (ageSeconds < 60 ? ageSeconds + 's' : Math.floor(ageSeconds / 60) + 'm') + ' old';
+        return `<div style="margin-top:8px;padding:8px 10px;border:1px solid rgba(255,152,0,.35);border-radius:10px;background:rgba(255,152,0,.08);font-size:11px;line-height:1.4;color:var(--tt-text-soft);"><strong style="color:#fff;">EMERGENCY ${source}</strong>${age}<br>Faction state remains live. Cloud account changes and fresh individual-target control are temporarily unavailable.</div>`;
     }
 
     function bindMainModeTabs(panel) {
@@ -4403,7 +4589,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.5</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4436,7 +4622,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.5</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4530,7 +4716,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.5</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.6</span></div>
         </div>`;
     }
 
@@ -4581,7 +4767,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.5</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.6</span></div>
             </div>`;
         }
 
@@ -4615,7 +4801,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.5</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.6</span></div>
         </div>`;
     }
 
@@ -4651,7 +4837,7 @@
         }
 
         if (!state.serverOnline) {
-            panel.innerHTML = `<div style="text-align:center;padding:32px 16px;"><div style="font-size:40px;">\u26A0\uFE0F</div><div style="font-weight:700;font-size:18px;margin:8px 0;">Cloud tracker unavailable</div><div style="font-size:14px;color:var(--tt-text-soft);">Your private Cloudflare tracker could not be reached.</div><button id="retry-poll" class="tt-watch-btn" style="margin-top:16px;">Retry</button></div>`;
+            panel.innerHTML = `<div style="text-align:center;padding:32px 16px;"><div style="font-size:40px;">\u26A0\uFE0F</div><div style="font-weight:700;font-size:18px;margin:8px 0;">Tracker unavailable</div><div style="font-size:14px;color:var(--tt-text-soft);">Cloudflare, local Termux and the emergency Gist could not be reached.</div><button id="retry-poll" class="tt-watch-btn" style="margin-top:16px;">Retry</button></div>`;
             document.getElementById('retry-poll')?.addEventListener('click', () => pollServer().then(updatePanelContent));
             return;
         }
@@ -4736,7 +4922,8 @@
         }
 
         const copyAllBtnHtml = state.selectedFactionId ? `<button id="tt-copy-all-btn" class="tt-copy-all-btn" title="Copy current view as text">\uD83D\uDCCB</button>` : '';
-        const modeLabel = 'Cloud';
+        const sourceDisplay = getTrackerSourceDisplay();
+        const modeLabel = sourceDisplay.label;
 
         const headerHtml = `
       <div style="position:sticky;top:-16px;margin:-16px -16px 10px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
@@ -4745,10 +4932,11 @@
           <div style="display:flex;gap:8px;align-items:center;">${copyAllBtnHtml}${renderHelpEntryButton()}${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
         </div>
         ${renderMainModeTabs()}
+        ${renderFallbackNotice()}
         ${renderAccessNotice()}
         <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
           ${tabsHtml}
-          <div class="tt-chip tt-chip-soft"><span class="tt-dot tt-dot--online"></span><span style="margin-left:6px;font-size:11px;"> ${modeLabel}</span></div>
+          <div class="tt-chip tt-chip-soft"><span class="tt-dot ${sourceDisplay.dotClass}"></span><span style="margin-left:6px;font-size:11px;"> ${modeLabel}</span></div>
         </div>
       </div>`;
 
@@ -4773,7 +4961,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.5</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
