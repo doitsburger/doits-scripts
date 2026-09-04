@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.9 - Main Abroad Tab
+// @name         1 Doits Flight Tracker v18.4.10 - Gist Abroad Identity
 // @namespace    https://github.com/your-repo
-// @version      18.4.9
-// @description  Private travel tracker with fullscreen travel view, scrolling main header, a first-class Abroad main tab, Cloudflare -> local Termux -> GitHub Gist failover, fallback faction watch control, threat awareness, account tools, and admin management
+// @version      18.4.10
+// @description  Private travel tracker with fullscreen travel view, scrolling main header, a first-class Abroad main tab, Gist-safe own-faction identity recovery, Cloudflare -> local Termux -> GitHub Gist failover, fallback faction watch control, threat awareness, account tools, and admin management
 // @author       Doitsburger + Grok
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -160,10 +160,10 @@
         panelMode: 'factions',
         panelVisible: false,
         panelInterval: null,
-        myUserID: null,
+        myUserID: GM_getValue('trackerMyUserID', '') || null,
         myDestination: null,
-        myFactionID: null,
-        myFactionName: null,
+        myFactionID: GM_getValue('trackerMyFactionID', '') || null,
+        myFactionName: GM_getValue('trackerMyFactionName', '') || null,
         myTravelArrival: null,
         warFactions: new Set(),
         lastPollTime: 0,
@@ -229,15 +229,16 @@
 
     function getMyTornUserId() {
         try {
-            if (typeof unsafeWindow !== 'undefined' && unsafeWindow.uid) return unsafeWindow.uid.toString();
+            if (typeof unsafeWindow !== 'undefined') {
+                const value = unsafeWindow.uid ?? unsafeWindow.userID ?? unsafeWindow.userId ?? null;
+                if (value != null && /^\d+$/.test(String(value))) return String(value);
+            }
         } catch (e) {}
 
-        const link = document.querySelector('a[href*="/profiles.php?XID="]');
-
-        if (link) {
-            const m = link.href.match(/XID=(\d+)/);
-            if (m) return m[1];
-        }
+        try {
+            const value = window.uid ?? window.userID ?? window.userId ?? null;
+            if (value != null && /^\d+$/.test(String(value))) return String(value);
+        } catch (e) {}
 
         const el = document.querySelector('.user-info-value .user-id');
 
@@ -246,7 +247,81 @@
             if (t) return t;
         }
 
+        // Do not use a generic profile link here. On faction/profile pages the
+        // first XID link can belong to somebody else, which is unsafe for Gist
+        // fallback identity detection.
         return null;
+    }
+
+    function rememberTrackerIdentity() {
+        if (state.myUserID) GM_setValue('trackerMyUserID', String(state.myUserID));
+        if (state.myFactionID) GM_setValue('trackerMyFactionID', String(state.myFactionID));
+        if (state.myFactionName) GM_setValue('trackerMyFactionName', String(state.myFactionName));
+    }
+
+    function resolveOwnFactionFromAvailableState() {
+        const watched = state.watchedFactions || {};
+        const cachedUserId = String(GM_getValue('trackerMyUserID', '') || '').trim();
+        const cachedFactionId = String(GM_getValue('trackerMyFactionID', '') || '').trim();
+        const browserUserId = getMyTornUserId();
+        const userId = String(state.myUserID || browserUserId || cachedUserId || '').trim();
+
+        if (userId) state.myUserID = userId;
+
+        // Strongest signal: find this Torn XID inside the actual fallback roster.
+        if (userId) {
+            for (const fid in watched) {
+                if (watched[fid]?.members?.[userId]) {
+                    state.myFactionID = String(fid);
+                    state.myFactionName = watched[fid].name || `Faction ${fid}`;
+                    rememberTrackerIdentity();
+                    return { id: state.myFactionID, name: state.myFactionName, method: 'xid' };
+                }
+            }
+        }
+
+        // Torn's own faction cache is also safe if that faction exists in this snapshot.
+        const localFaction = getMyFactionDetails();
+        if (localFaction.id && watched[String(localFaction.id)]) {
+            state.myFactionID = String(localFaction.id);
+            state.myFactionName = watched[state.myFactionID].name || localFaction.name || `Faction ${state.myFactionID}`;
+            rememberTrackerIdentity();
+            return { id: state.myFactionID, name: state.myFactionName, method: 'torn-faction-cache' };
+        }
+
+        // Existing tracker users already have their Torn name stored locally. If the
+        // name is unique across the shared snapshot, use that roster entry to recover
+        // both XID and faction without asking Cloudflare.
+        const label = String(state.trackerLabel || '').trim().toLowerCase();
+        if (label) {
+            const matches = [];
+            for (const fid in watched) {
+                for (const [xid, member] of Object.entries(watched[fid]?.members || {})) {
+                    const name = String(member?.playerName || member?.name || '').trim().toLowerCase();
+                    if (name && name === label) matches.push({ fid: String(fid), xid: String(xid) });
+                }
+            }
+            if (matches.length === 1) {
+                const match = matches[0];
+                state.myUserID = match.xid;
+                state.myFactionID = match.fid;
+                state.myFactionName = watched[match.fid]?.name || `Faction ${match.fid}`;
+                rememberTrackerIdentity();
+                return { id: state.myFactionID, name: state.myFactionName, method: 'stored-name' };
+            }
+        }
+
+        // Last automatic fallback: a previously confirmed faction may still be used
+        // if it is actually present in the current shared snapshot.
+        const rememberedFid = String(state.myFactionID || cachedFactionId || '').trim();
+        if (rememberedFid && watched[rememberedFid]) {
+            state.myFactionID = rememberedFid;
+            state.myFactionName = watched[rememberedFid].name || state.myFactionName || `Faction ${rememberedFid}`;
+            rememberTrackerIdentity();
+            return { id: state.myFactionID, name: state.myFactionName, method: 'remembered-faction' };
+        }
+
+        return { id: null, name: null, method: null };
     }
 
     function standardizeCountryName(country) {
@@ -670,6 +745,9 @@
         GM_setValue('trackerClientSecret', '');
         GM_setValue('trackerLabel', '');
         GM_setValue('trackerRegistrationPending', false);
+        GM_setValue('trackerMyUserID', '');
+        GM_setValue('trackerMyFactionID', '');
+        GM_setValue('trackerMyFactionName', '');
     }
 
     function cloudRequest(method, path, data = null, options = {}) {
@@ -1682,6 +1760,16 @@
                 name: data.factions[fid].name || 'Faction ' + fid,
                 members: data.factions[fid].members || {}
             };
+        }
+
+        if (isCloud || isLocal) {
+            rememberTrackerIdentity();
+        } else {
+            // Gist is shared data, so never trust the Gist owner's myFactionID.
+            // Resolve THIS browser's faction from its own XID/name/cache plus the
+            // faction rosters already contained in the fallback snapshot.
+            resolveOwnFactionFromAvailableState();
+            sanitizeOpponentFactions();
         }
 
         if (isCloud) {
@@ -2797,7 +2885,7 @@
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.9</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.10</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -2944,7 +3032,12 @@
         if (state.factionApplicationLoading && !factionInfo) {
             factionBody = '<div class="tt-admin-empty">Checking faction registration...</div>';
         } else if (!factionInfo) {
-            factionBody = `<div class="tt-admin-empty">Faction registration status is unavailable.<div class="tt-admin-card-actions" style="justify-content:center;"><button id="tt-faction-application-refresh" class="tt-admin-action">TRY AGAIN</button></div></div>`;
+            if (state.dataSource === 'gist' || state.dataSource === 'local') {
+                const fallbackName = state.dataSource === 'gist' ? 'Gist' : 'Termux';
+                factionBody = `<div class="tt-admin-empty">Cloud faction registration status is unavailable while ${fallbackName} fallback is active.<br><br><strong style="color:#fff;">This does not block live Factions or Abroad data.</strong></div>`;
+            } else {
+                factionBody = `<div class="tt-admin-empty">Faction registration status is unavailable.<div class="tt-admin-card-actions" style="justify-content:center;"><button id="tt-faction-application-refresh" class="tt-admin-action">TRY AGAIN</button></div></div>`;
+            }
         } else if (!currentFaction?.factionId) {
             factionBody = '<div class="tt-app-copy">You are not currently showing as a member of a Torn faction. Faction registration becomes available when you are in a faction.</div>';
         } else if (factionInfo.registered === true) {
@@ -3013,7 +3106,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.9</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.10</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -3228,7 +3321,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.9</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.10</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -4028,6 +4121,40 @@
         return html;
     }
 
+    function renderAbroadFallbackFactionPicker() {
+        const options = Object.entries(state.watchedFactions || {})
+            .map(([fid, faction]) => `<option value="${escapeHtml(String(fid))}">${escapeHtml(faction?.name || ('Faction ' + fid))} [${escapeHtml(String(fid))}]</option>`)
+            .join('');
+
+        if (!options) return '<div class="tt-abroad-empty">No faction data is available in the fallback snapshot.</div>';
+
+        return `<div class="tt-abroad-empty" style="text-align:left;line-height:1.45;">
+            <strong style="color:#fff;">Choose your faction for Abroad</strong><br>
+            The shared fallback data is live, but this browser could not automatically identify which faction is yours. This choice is stored only on this device.
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+                <select id="tt-abroad-own-faction-select" style="flex:1;min-width:0;background:#111;color:#fff;border:1px solid var(--tt-border-subtle);border-radius:8px;padding:9px 8px;">${options}</select>
+                <button id="tt-abroad-set-own-faction" class="tt-watch-btn" type="button">USE</button>
+            </div>
+        </div>`;
+    }
+
+    function bindAbroadFallbackFactionPicker() {
+        const button = document.getElementById('tt-abroad-set-own-faction');
+        const select = document.getElementById('tt-abroad-own-faction-select');
+        if (!button || !select) return;
+
+        button.addEventListener('click', () => {
+            const fid = String(select.value || '').trim();
+            const faction = state.watchedFactions?.[fid];
+            if (!fid || !faction) return;
+            state.myFactionID = fid;
+            state.myFactionName = faction.name || `Faction ${fid}`;
+            rememberTrackerIdentity();
+            sanitizeOpponentFactions();
+            updatePanelContent();
+        });
+    }
+
     function renderAbroadTab(fid) {
         const ownFaction = state.watchedFactions[fid];
 
@@ -4678,7 +4805,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.9</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.10</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4711,7 +4838,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.9</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.10</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4805,7 +4932,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.9</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.10</span></div>
         </div>`;
     }
 
@@ -4856,7 +4983,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.9</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.10</span></div>
             </div>`;
         }
 
@@ -4890,7 +5017,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.9</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.10</span></div>
         </div>`;
     }
 
@@ -5022,9 +5149,13 @@
         let bodyHtml;
 
         if (state.panelMode === 'abroad') {
+            if ((state.dataSource === 'gist' || state.dataSource === 'local') && (!state.myFactionID || !state.watchedFactions[String(state.myFactionID)])) {
+                resolveOwnFactionFromAvailableState();
+            }
             const ownFid = String(state.myFactionID || '');
             const ownFaction = ownFid ? state.watchedFactions[ownFid] : null;
             const opponentCount = getEnemyFactionIds(ownFid).length;
+            const fallbackPicker = (state.dataSource === 'gist' || state.dataSource === 'local') ? renderAbroadFallbackFactionPicker() : '<div class="tt-abroad-empty">Your faction data is not available yet.</div>';
             bodyHtml = `<div style="margin-top:4px;">
                 <div class="tt-row" style="margin-bottom:8px;">
                     <div>
@@ -5032,7 +5163,7 @@
                         <div style="font-size:11px;color:var(--tt-text-soft);">${ownFaction ? escapeHtml(ownFaction.name) : 'Your faction'} + ${opponentCount} opponent faction${opponentCount === 1 ? '' : 's'} \u2022 Present + inbound</div>
                     </div>
                 </div>
-                ${ownFaction ? renderAbroadTab(ownFid) : '<div class="tt-abroad-empty">Your faction data is not available yet.</div>'}
+                ${ownFaction ? renderAbroadTab(ownFid) : fallbackPicker}
             </div>`;
         } else if (state.selectedFactionId && state.watchedFactions[state.selectedFactionId]) {
             bodyHtml = renderFactionMembers(state.selectedFactionId);
@@ -5040,7 +5171,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.9</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.10</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
@@ -5049,6 +5180,7 @@
         bindAdminEntryButton();
         bindFirstRunWelcomeCard();
         bindAccessRecoveryActions();
+        bindAbroadFallbackFactionPicker();
 
         const copyAllBtn = document.getElementById('tt-copy-all-btn');
 
