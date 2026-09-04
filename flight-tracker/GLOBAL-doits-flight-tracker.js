@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.8 - Admin Watch + Fallback Pause
+// @name         1 Doits Flight Tracker v18.4.9 - Main Abroad Tab
 // @namespace    https://github.com/your-repo
-// @version      18.4.8
-// @description  Private travel tracker with Cloudflare -> local Termux -> GitHub Gist failover, admin-only faction watch control, paused individual tracking during fallback, faction applications, threat awareness, recovery, account tools, and admin management
+// @version      18.4.9
+// @description  Private travel tracker with fullscreen travel view, scrolling main header, a first-class Abroad main tab, Cloudflare -> local Termux -> GitHub Gist failover, fallback faction watch control, threat awareness, account tools, and admin management
 // @author       Doitsburger + Grok
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -38,7 +38,6 @@
     const LANDED_DISPLAY_MS = 1 * 60 * 1000;
     const AUTH_CONFIRM_DELAY_MS = 1000;
     const AUTH_FAILURE_LIMIT = 3;
-    const TRACKER_ADMIN_TORN_ID = '3655458';
 
     const DEFAULT_DURATIONS = {
         "Mexico": { "Commercial": 24, "Personal": 17, "Private": 12 },
@@ -1121,14 +1120,8 @@
     }
 
 
-    function isEmergencyFallbackActive() {
-        return state.dataSource === 'local' || state.dataSource === 'gist';
-    }
-
     function isAdminUser() {
-        if (state.accessInfo?.accessType === 'admin') return true;
-        const currentId = String(state.myUserID || getMyTornUserId() || '').trim();
-        return currentId === TRACKER_ADMIN_TORN_ID;
+        return state.accessInfo?.accessType === 'admin';
     }
 
     function getAccessStatus() {
@@ -1666,12 +1659,6 @@
         state.serverOnline = true;
         state.dataSource = source;
         state.fallbackUpdatedAt = isCloud ? 0 : Number(updatedAt || getFallbackTimestamp(data) || Date.now());
-
-        if (!isCloud && state.panelMode === 'individuals') {
-            state.panelMode = 'factions';
-            state.selectedFactionId = null;
-            state.activeTab = 'all';
-        }
         state.fallbackLastError = null;
         state.authReconnecting = false;
 
@@ -1736,10 +1723,8 @@
         }
 
         const notificationSources = { ...state.watchedFactions };
-        if (isCloud) {
-            const standaloneTracked = getStandaloneTrackedIndividuals();
-            if (Object.keys(standaloneTracked).length) notificationSources.__tracked__ = { name: 'Tracked players', members: standaloneTracked };
-        }
+        const standaloneTracked = getStandaloneTrackedIndividuals();
+        if (Object.keys(standaloneTracked).length) notificationSources.__tracked__ = { name: 'Tracked players', members: standaloneTracked };
 
         detectNewFlights(notificationSources);
         detectLandingAlerts(notificationSources);
@@ -1863,11 +1848,6 @@
 
     // ==================== UI ACTIONS ====================
     async function addFactionToWatch(fid) {
-        if (!isAdminUser()) {
-            alert('Only the tracker administrator can manage watched factions.');
-            return;
-        }
-
         if (!state.apiKeySet) {
             alert('Finish your tracker setup first.');
             return;
@@ -1923,11 +1903,6 @@
     }
 
     async function removeWatchedFaction(fid) {
-        if (!isAdminUser()) {
-            alert('Only the tracker administrator can manage watched factions.');
-            return;
-        }
-
         if (String(fid) === String(state.myFactionID)) return;
 
         let cloudOk = false;
@@ -1974,11 +1949,6 @@
     }
 
     async function addTrackedPlayer(playerId) {
-        if (isEmergencyFallbackActive()) {
-            alert('Individual tracking is temporarily paused while emergency fallback is active.');
-            return;
-        }
-
         if (!state.apiKeySet) {
             alert('Finish your Cloudflare tracker setup first.');
             return;
@@ -2040,11 +2010,6 @@
     }
 
     async function removeTrackedPlayer(playerId) {
-        if (isEmergencyFallbackActive()) {
-            alert('Individual tracking is temporarily paused while emergency fallback is active.');
-            return false;
-        }
-
         try {
             await cloudRequest('DELETE', '/client/subscriptions/' + encodeURIComponent(playerId));
             state.pendingTrackedIds.delete(String(playerId));
@@ -2059,11 +2024,6 @@
     }
 
     async function runTrackedPlayerAction(playerId, actionMode, button = null) {
-        if (isEmergencyFallbackActive()) {
-            alert('Individual tracking is temporarily paused while emergency fallback is active.');
-            return false;
-        }
-
         const id = String(playerId || '').trim();
         const mode = String(actionMode || '').toLowerCase();
 
@@ -2259,14 +2219,22 @@
     }
 
     function applyTrackerPanelLayout(panel, opening = false) {
-        if (!panel) return false;
+        if (!panel) return true;
 
-        const desktop = getTrackerDesktopPanelLayout();
-        const useDesktopVertical = !!desktop;
-        panel.dataset.ttLayout = desktop?.mode || 'mobile-sheet';
+        // v18.4.8: the tracker is now a true fullscreen workspace on every
+        // viewport. The panel itself remains the scroll container so the main
+        // Travel Tracker header can naturally scroll off screen with the cards.
+        panel.dataset.ttLayout = 'fullscreen';
 
         Object.assign(panel.style, {
             position: 'fixed',
+            left: '0',
+            right: '0',
+            top: '0',
+            bottom: '0',
+            width: '100vw',
+            height: '100dvh',
+            maxHeight: '100dvh',
             background: 'var(--tt-bg-elevated)',
             backdropFilter: 'blur(20px)',
             WebkitBackdropFilter: 'blur(20px)',
@@ -2281,43 +2249,18 @@
             overscrollBehavior: 'contain',
             WebkitOverflowScrolling: 'touch',
             scrollbarGutter: 'stable',
+            borderRadius: '0',
+            border: 'none',
+            boxShadow: 'none',
+            transform: opening ? 'translateX(-18px)' : 'translateX(0)',
+            opacity: opening ? '0' : '1',
             transition: 'transform var(--tt-transition-med), opacity var(--tt-transition-fast)'
         });
 
-        if (useDesktopVertical) {
-            Object.assign(panel.style, {
-                left: `${Math.round(desktop.left)}px`,
-                right: 'auto',
-                top: `${desktop.top}px`,
-                bottom: `${desktop.bottom}px`,
-                width: `${Math.round(desktop.width)}px`,
-                height: `calc(100vh - ${desktop.top + desktop.bottom}px)`,
-                maxHeight: 'none',
-                borderRadius: '12px',
-                border: '1px solid rgba(255,255,255,0.10)',
-                boxShadow: '0 14px 36px rgba(0,0,0,0.72)',
-                transform: opening ? 'translateX(-18px)' : 'translateX(0)',
-                opacity: opening ? '0' : '1'
-            });
-        } else {
-            Object.assign(panel.style, {
-                left: '0',
-                right: 'auto',
-                top: 'auto',
-                bottom: '0',
-                width: '100vw',
-                height: 'auto',
-                maxHeight: '85vh',
-                borderRadius: 'var(--tt-radius-lg) var(--tt-radius-lg) 0 0',
-                border: 'none',
-                boxShadow: 'var(--tt-shadow-strong)',
-                transform: opening ? 'translateY(100%)' : 'translateY(0)',
-                opacity: '1'
-            });
-        }
-
-        syncTrackerPanelOverlay(useDesktopVertical);
-        return useDesktopVertical;
+        // A separate dimming overlay is unnecessary because the tracker itself
+        // covers the entire viewport.
+        syncTrackerPanelOverlay(true);
+        return true;
     }
 
     function syncTrackerDesktopLayout() {
@@ -2562,10 +2505,11 @@
       .tt-player-action--untrack { border-color:rgba(239,83,80,0.55);background:rgba(239,83,80,0.16);color:#FFCDD2; }
       .tt-player-action:active { opacity:0.65; }
       .tt-player-empty { padding:18px;border-radius:var(--tt-radius-md);border:1px dashed rgba(255,255,255,0.15);text-align:center;font-size:13px;color:var(--tt-text-soft); }
-      .tt-main-mode-tabs { display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:10px;padding:3px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:8px; }
-      .tt-main-mode-tab { border:0;border-radius:5px;padding:8px 10px;background:transparent;color:var(--tt-text-soft);font-size:11px;font-weight:800;letter-spacing:0.04em;cursor:pointer;touch-action:manipulation; }
+      .tt-main-mode-tabs { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-top:10px;padding:3px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:8px; }
+      .tt-main-mode-tab { min-width:0;border:0;border-radius:5px;padding:8px 4px;background:transparent;color:var(--tt-text-soft);font-size:11px;font-weight:800;letter-spacing:0.03em;cursor:pointer;touch-action:manipulation; }
       .tt-main-mode-tab.active { background:rgba(255,255,255,0.11);color:var(--tt-text-main);box-shadow:inset 0 0 0 1px rgba(255,255,255,0.06); }
-      .tt-main-mode-tab:disabled { opacity:0.35;cursor:not-allowed; }
+      .tt-main-mode-tab--abroad { color:#4FC3F7; }
+      .tt-main-mode-tab--abroad.active { background:rgba(79,195,247,0.18);color:#E1F5FE;box-shadow:inset 0 0 0 1px rgba(79,195,247,0.18); }
       .tt-main-mode-tab:active { opacity:0.7; }
 
       .tt-admin-entry { position:relative;border:1px solid rgba(255,179,0,0.45);background:rgba(255,179,0,0.10);color:#FFE082;border-radius:6px;padding:7px 9px;font-size:10px;font-weight:900;letter-spacing:0.04em;cursor:pointer;touch-action:manipulation; }
@@ -2760,7 +2704,7 @@
 
     function openHelpPanel(returnMode = null) {
         const currentMode = String(returnMode || state.panelMode || 'factions');
-        state.helpReturnMode = ['factions', 'individuals', 'account', 'admin'].includes(currentMode) ? currentMode : 'factions';
+        state.helpReturnMode = ['factions', 'abroad', 'individuals', 'account', 'admin'].includes(currentMode) ? currentMode : 'factions';
         markHelpWelcomeSeen();
         state.panelMode = 'help';
         state.selectedFactionId = null;
@@ -2822,7 +2766,7 @@
               <div class="tt-help-callout"><strong>Why a window?</strong><br>The tracker may first detect another player's departure shortly after it actually happened, and it can take another collection cycle to confirm they have landed. The displayed window is designed to account for both edges.</div>
               <p><strong>OUT</strong> means travelling away from Torn. <strong>RET</strong> means returning to Torn. <strong>LANDING</strong> means the flight has entered its arrival window. <strong>LANDED</strong> remains visible briefly after landing.</p>`),
             renderHelpSection('abroad', 'ABROAD & THREAT ALERTS', `
-              <p>Select your own faction and open <strong>ABROAD</strong> to see your faction members who are currently overseas or inbound, alongside watched factions you deliberately marked as OPPONENT.</p>
+              <p>Use the main <strong>ABROAD</strong> tab to immediately see your faction members who are currently overseas or inbound, alongside watched factions you deliberately marked as OPPONENT. You no longer need to open your own faction first.</p>
               <p><strong>AT RISK</strong> means a known opponent in that country is stronger than that particular friendly. <strong>OUTMATCHED</strong> means at least one known opponent is stronger than every friendly with known battle stats in that location.</p>
               <p>When you are abroad, a faint compact &#128680; alert sits at the top-left when a stronger OPPONENT is present or inbound to your country. Tap it to open the fully visible threat panel with each opponent's battle-stat estimate and live arrival countdown window.</p>`),
             renderHelpSection('account', 'ACCOUNT & FACTION ACCESS', `
@@ -2849,17 +2793,17 @@
           <div class="tt-help-step"><div class="tt-help-step-num">1</div><div><strong>WATCH FACTIONS</strong><span>Your own faction is automatic. Watch other factions from their Torn faction page.</span></div></div>
           <div class="tt-help-step"><div class="tt-help-step-num">2</div><div><strong>MARK REAL ENEMIES AS OPPONENT</strong><span>Only OPPONENT factions feed enemy Abroad and threat calculations.</span></div></div>
           <div class="tt-help-step"><div class="tt-help-step-num">3</div><div><strong>TRACK INDIVIDUALS WHEN NEEDED</strong><span>Follow specific players without classifying them as enemies.</span></div></div>
-          <div class="tt-help-step"><div class="tt-help-step-num">4</div><div><strong>USE ABROAD FOR SITUATIONAL AWARENESS</strong><span>See friendly and opponent presence/inbound movement by country.</span></div></div>
+          <div class="tt-help-step"><div class="tt-help-step-num">4</div><div><strong>OPEN THE MAIN ABROAD TAB</strong><span>See friendly and opponent presence/inbound movement by country without opening your faction first.</span></div></div>
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.8</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.9</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         document.getElementById('tt-help-back')?.addEventListener('click', () => {
-            const returnMode = ['factions', 'individuals', 'account', 'admin'].includes(state.helpReturnMode) ? state.helpReturnMode : 'factions';
+            const returnMode = ['factions', 'abroad', 'individuals', 'account', 'admin'].includes(state.helpReturnMode) ? state.helpReturnMode : 'factions';
             state.panelMode = returnMode;
             updatePanelContent();
         });
@@ -3069,7 +3013,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.8</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.9</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -3284,7 +3228,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.8</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.9</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -3450,10 +3394,10 @@
     }
 
     function renderMainModeTabs() {
-        const fallback = isEmergencyFallbackActive();
         return `<div class="tt-main-mode-tabs">
             <button class="tt-main-mode-tab ${state.panelMode === 'factions' ? 'active' : ''}" data-panel-mode="factions">FACTIONS</button>
-            <button class="tt-main-mode-tab ${state.panelMode === 'individuals' ? 'active' : ''}" data-panel-mode="individuals" ${fallback ? 'disabled title="Paused during emergency fallback"' : ''}>${fallback ? 'INDIVIDUALS • PAUSED' : 'INDIVIDUALS'}</button>
+            <button class="tt-main-mode-tab tt-main-mode-tab--abroad ${state.panelMode === 'abroad' ? 'active' : ''}" data-panel-mode="abroad">ABROAD</button>
+            <button class="tt-main-mode-tab ${state.panelMode === 'individuals' ? 'active' : ''}" data-panel-mode="individuals">INDIVIDUALS</button>
         </div>`;
     }
 
@@ -3468,7 +3412,7 @@
         const source = state.dataSource === 'local' ? 'LOCAL TERMUX' : 'GITHUB GIST';
         const ageSeconds = state.fallbackUpdatedAt ? Math.max(0, Math.round((Date.now() - state.fallbackUpdatedAt) / 1000)) : null;
         const age = ageSeconds === null ? '' : ' • data ' + (ageSeconds < 60 ? ageSeconds + 's' : Math.floor(ageSeconds / 60) + 'm') + ' old';
-        return `<div style="margin-top:8px;padding:8px 10px;border:1px solid rgba(255,152,0,.35);border-radius:10px;background:rgba(255,152,0,.08);font-size:11px;line-height:1.4;color:var(--tt-text-soft);"><strong style="color:#fff;">EMERGENCY ${source}</strong>${age}<br>Faction state remains live. Individual tracking is paused until Cloud mode returns.</div>`;
+        return `<div style="margin-top:8px;padding:8px 10px;border:1px solid rgba(255,152,0,.35);border-radius:10px;background:rgba(255,152,0,.08);font-size:11px;line-height:1.4;color:var(--tt-text-soft);"><strong style="color:#fff;">EMERGENCY ${source}</strong>${age}<br>Faction state remains live. Cloud account changes and fresh individual-target control are temporarily unavailable.</div>`;
     }
 
     function bindMainModeTabs(panel) {
@@ -3477,7 +3421,6 @@
                 e.stopPropagation();
                 const mode = btn.dataset.panelMode;
                 if (!mode || mode === state.panelMode) return;
-                if (mode === 'individuals' && isEmergencyFallbackActive()) return;
                 state.panelMode = mode;
                 state.selectedFactionId = null;
                 state.activeTab = 'all';
@@ -3489,13 +3432,15 @@
     // ==================== PANEL ====================
     function createPanel(mode = 'factions') {
         const nextMode =
-            mode === 'individuals' && !isEmergencyFallbackActive()
-                ? 'individuals'
-                : mode === 'account'
-                    ? 'account'
-                    : mode === 'help'
-                        ? 'help'
-                        : (mode === 'admin' && isAdminUser() ? 'admin' : 'factions');
+            mode === 'abroad'
+                ? 'abroad'
+                : mode === 'individuals'
+                    ? 'individuals'
+                    : mode === 'account'
+                        ? 'account'
+                        : mode === 'help'
+                            ? 'help'
+                            : (mode === 'admin' && isAdminUser() ? 'admin' : 'factions');
         const existing = document.getElementById('travel-panel');
 
         if (existing) {
@@ -4733,7 +4678,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.8</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.9</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4766,7 +4711,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.8</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.9</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4860,7 +4805,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.8</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.9</span></div>
         </div>`;
     }
 
@@ -4911,7 +4856,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.8</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.9</span></div>
             </div>`;
         }
 
@@ -4945,7 +4890,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.8</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.9</span></div>
         </div>`;
     }
 
@@ -5043,34 +4988,24 @@
 
         const fids = Object.keys(state.watchedFactions);
 
-        const isOwnFactionSelected = !!(
-            state.selectedFactionId &&
-            state.myFactionID &&
-            String(state.selectedFactionId) === String(state.myFactionID)
-        );
-
         let tabsHtml = '';
 
-        if (state.selectedFactionId) {
-            let tabItems = `
+        if (state.selectedFactionId && state.panelMode === 'factions') {
+            const tabItems = `
                 <button class="tt-tab ${state.activeTab === 'all' ? 'tt-active' : ''}" data-tab="all">All</button>
                 <button class="tt-tab ${state.activeTab === 'outbound' ? 'tt-active' : ''}" data-tab="outbound">Out</button>
                 <button class="tt-tab ${state.activeTab === 'return' ? 'tt-active' : ''}" data-tab="return">Return</button>
             `;
 
-            if (isOwnFactionSelected) {
-                tabItems += `<button class="tt-tab tt-abroad ${state.activeTab === 'abroad' ? 'tt-active' : ''}" data-tab="abroad">\uD83C\uDF0D Abroad</button>`;
-            }
-
             tabsHtml = `<div class="tt-tab-row">${tabItems}</div>`;
         }
 
-        const copyAllBtnHtml = state.selectedFactionId ? `<button id="tt-copy-all-btn" class="tt-copy-all-btn" title="Copy current view as text">\uD83D\uDCCB</button>` : '';
+        const copyAllBtnHtml = (state.selectedFactionId || (state.panelMode === 'abroad' && state.myFactionID)) ? `<button id="tt-copy-all-btn" class="tt-copy-all-btn" title="Copy current view as text">\uD83D\uDCCB</button>` : '';
         const sourceDisplay = getTrackerSourceDisplay();
         const modeLabel = sourceDisplay.label;
 
         const headerHtml = `
-      <div style="position:sticky;top:-16px;margin:-16px -16px 10px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
+      <div style="position:relative;margin:-16px -16px 10px;padding:12px 16px 10px;background:#0B0B0B;z-index:1;">
         <div class="tt-row">
           <div class="tt-row-gap"><span style="font-size:22px;">\u2708\uFE0F</span><div><div style="font-size:16px;font-weight:700;">Travel tracker</div><div style="font-size:12px;color:var(--tt-text-soft);">${fids.length} faction${fids.length !== 1 ? 's' : ''} \u2022 ${modeLabel}</div></div></div>
           <div style="display:flex;gap:8px;align-items:center;">${copyAllBtnHtml}${renderHelpEntryButton()}${renderAccountEntryButton()}${renderAdminEntryButton()}<button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;touch-action:manipulation;">\u2715</button></div>
@@ -5086,26 +5021,26 @@
 
         let bodyHtml;
 
-        if (state.selectedFactionId && state.watchedFactions[state.selectedFactionId]) {
-            if (state.activeTab === 'abroad' && isOwnFactionSelected) {
-                bodyHtml = `<div style="margin-top:4px;">
-                    <div class="tt-row" style="margin-bottom:8px;">
-                        <button id="tt-back-to-list" style="background:none;border:none;color:var(--tt-text-soft);cursor:pointer;display:flex;align-items:center;gap:6px;font-size:16px;touch-action:manipulation;"><span style="font-size:20px;">\u2190</span><span>Factions</span></button>
-                        <div style="text-align:right;">
-                            <div style="font-size:16px;font-weight:700;">Abroad</div>
-                            <div style="font-size:11px;color:var(--tt-text-soft);">Present + inbound</div>
-                        </div>
+        if (state.panelMode === 'abroad') {
+            const ownFid = String(state.myFactionID || '');
+            const ownFaction = ownFid ? state.watchedFactions[ownFid] : null;
+            const opponentCount = getEnemyFactionIds(ownFid).length;
+            bodyHtml = `<div style="margin-top:4px;">
+                <div class="tt-row" style="margin-bottom:8px;">
+                    <div>
+                        <div style="font-size:16px;font-weight:800;">\uD83C\uDF0D Abroad</div>
+                        <div style="font-size:11px;color:var(--tt-text-soft);">${ownFaction ? escapeHtml(ownFaction.name) : 'Your faction'} + ${opponentCount} opponent faction${opponentCount === 1 ? '' : 's'} \u2022 Present + inbound</div>
                     </div>
-                    ${renderAbroadTab(state.selectedFactionId)}
-                </div>`;
-            } else {
-                bodyHtml = renderFactionMembers(state.selectedFactionId);
-            }
+                </div>
+                ${ownFaction ? renderAbroadTab(ownFid) : '<div class="tt-abroad-empty">Your faction data is not available yet.</div>'}
+            </div>`;
+        } else if (state.selectedFactionId && state.watchedFactions[state.selectedFactionId]) {
+            bodyHtml = renderFactionMembers(state.selectedFactionId);
         } else {
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.8</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.9</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
@@ -5119,13 +5054,8 @@
 
         if (copyAllBtn) {
             copyAllBtn.addEventListener('click', () => {
-                if (
-                    state.activeTab === 'abroad' &&
-                    state.selectedFactionId &&
-                    state.myFactionID &&
-                    String(state.selectedFactionId) === String(state.myFactionID)
-                ) {
-                    copyAbroadReport(state.selectedFactionId);
+                if (state.panelMode === 'abroad' && state.myFactionID) {
+                    copyAbroadReport(String(state.myFactionID));
                     return;
                 }
 
@@ -5379,15 +5309,13 @@
         if (isFactionProfilePage() && currentFid) {
             const isWatched = !!state.watchedFactions[currentFid];
             const isOwn = String(currentFid) === String(state.myFactionID);
-            const canManageWatch = isAdminUser();
+            const watchDisabled = isOwn ? 'disabled' : '';
 
             html += `<div class="tt-row" style="margin-bottom:10px;">
         <div class="tt-section-title">Watched factions</div>
-        ${isOwn
-            ? '<button class="tt-watch-btn tt-watch-btn--active" disabled>OWN \u2713</button>'
-            : canManageWatch
-                ? `<button id="tt-watch-faction-header" class="tt-watch-btn ${isWatched ? 'tt-watch-btn--active' : ''}">${isWatched ? 'WATCHING \u2713' : 'WATCH'}</button>`
-                : '<span class="tt-chip tt-chip-soft">ADMIN MANAGED</span>'}
+        <button id="tt-watch-faction-header" class="tt-watch-btn ${isWatched ? 'tt-watch-btn--active' : ''}" ${watchDisabled}>
+          ${isOwn ? 'OWN \u2713' : (isWatched ? 'WATCHING \u2713' : 'WATCH')}
+        </button>
       </div>`;
         } else {
             html += '<div class="tt-section-title" style="margin-bottom:8px;">Watched factions</div>';
