@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         1 Doits Flight Tracker v18.4.6 - Termux + Gist Failover
+// @name         1 Doits Flight Tracker v18.4.8 - Admin Watch + Fallback Pause
 // @namespace    https://github.com/your-repo
-// @version      18.4.6
-// @description  Private travel tracker with automatic Cloudflare -> local Termux -> GitHub Gist emergency failover, plus faction applications, threat awareness, recovery, account tools, and admin management
+// @version      18.4.8
+// @description  Private travel tracker with Cloudflare -> local Termux -> GitHub Gist failover, admin-only faction watch control, paused individual tracking during fallback, faction applications, threat awareness, recovery, account tools, and admin management
 // @author       Doitsburger + Grok
 // @match        https://www.torn.com/*
 // @grant        GM_setValue
@@ -38,6 +38,7 @@
     const LANDED_DISPLAY_MS = 1 * 60 * 1000;
     const AUTH_CONFIRM_DELAY_MS = 1000;
     const AUTH_FAILURE_LIMIT = 3;
+    const TRACKER_ADMIN_TORN_ID = '3655458';
 
     const DEFAULT_DURATIONS = {
         "Mexico": { "Commercial": 24, "Personal": 17, "Private": 12 },
@@ -749,6 +750,37 @@
         });
     }
 
+    function localFallbackControlRequest(method, path, data = null, timeout = 4000) {
+        return new Promise((resolve, reject) => {
+            const opts = {
+                method,
+                url: LOCAL_FALLBACK_SERVER + path,
+                headers: { 'Accept': 'application/json' },
+                timeout,
+                onload: response => {
+                    let body = null;
+                    try { body = JSON.parse(response.responseText || '{}'); } catch (e) {}
+                    if (response.status >= 200 && response.status < 300) {
+                        resolve(body || {});
+                        return;
+                    }
+                    const error = new Error(body?.error || ('Local fallback HTTP ' + response.status));
+                    error.status = response.status;
+                    reject(error);
+                },
+                onerror: () => reject(new Error('Local Termux fallback could not be reached')),
+                ontimeout: () => reject(new Error('Local Termux fallback request timed out'))
+            };
+
+            if (data !== null && data !== undefined) {
+                opts.headers['Content-Type'] = 'application/json';
+                opts.data = JSON.stringify(data);
+            }
+
+            GM_xmlhttpRequest(opts);
+        });
+    }
+
     function getFallbackTimestamp(data) {
         const scanTime = Number(data?.lastScanTime || 0);
         if (Number.isFinite(scanTime) && scanTime > 0) return scanTime;
@@ -1089,8 +1121,14 @@
     }
 
 
+    function isEmergencyFallbackActive() {
+        return state.dataSource === 'local' || state.dataSource === 'gist';
+    }
+
     function isAdminUser() {
-        return state.accessInfo?.accessType === 'admin';
+        if (state.accessInfo?.accessType === 'admin') return true;
+        const currentId = String(state.myUserID || getMyTornUserId() || '').trim();
+        return currentId === TRACKER_ADMIN_TORN_ID;
     }
 
     function getAccessStatus() {
@@ -1628,6 +1666,12 @@
         state.serverOnline = true;
         state.dataSource = source;
         state.fallbackUpdatedAt = isCloud ? 0 : Number(updatedAt || getFallbackTimestamp(data) || Date.now());
+
+        if (!isCloud && state.panelMode === 'individuals') {
+            state.panelMode = 'factions';
+            state.selectedFactionId = null;
+            state.activeTab = 'all';
+        }
         state.fallbackLastError = null;
         state.authReconnecting = false;
 
@@ -1692,8 +1736,10 @@
         }
 
         const notificationSources = { ...state.watchedFactions };
-        const standaloneTracked = getStandaloneTrackedIndividuals();
-        if (Object.keys(standaloneTracked).length) notificationSources.__tracked__ = { name: 'Tracked players', members: standaloneTracked };
+        if (isCloud) {
+            const standaloneTracked = getStandaloneTrackedIndividuals();
+            if (Object.keys(standaloneTracked).length) notificationSources.__tracked__ = { name: 'Tracked players', members: standaloneTracked };
+        }
 
         detectNewFlights(notificationSources);
         detectLandingAlerts(notificationSources);
@@ -1817,37 +1863,122 @@
 
     // ==================== UI ACTIONS ====================
     async function addFactionToWatch(fid) {
-        if (!state.apiKeySet) {
-            alert('Finish your Cloudflare tracker setup first.');
+        if (!isAdminUser()) {
+            alert('Only the tracker administrator can manage watched factions.');
             return;
         }
+
+        if (!state.apiKeySet) {
+            alert('Finish your tracker setup first.');
+            return;
+        }
+
         const name = scrapeFactionNameFromPage() || ('Faction ' + fid);
+        let cloudOk = false;
+        let localOk = false;
+        let cloudError = null;
+        let localError = null;
+
         try {
             await cloudRequest('POST', '/client/factions', { factionId: fid, factionName: name });
-            await pollServer();
-            state.selectedFactionId = fid;
-            if (!state.panelVisible) createPanel();
-            else updatePanelContent();
+            cloudOk = true;
         } catch (e) {
-            alert('Failed: ' + e.message);
+            cloudError = e;
         }
+
+        // Keep the phone-hosted emergency collector in sync whenever it is reachable.
+        // If Cloudflare/D1 is down, this becomes the authoritative watch action.
+        try {
+            await localFallbackControlRequest('POST', '/api/watch', { fid: String(fid), name });
+            localOk = true;
+            fallbackCache = null;
+            fallbackCacheAt = 0;
+            fallbackCacheSource = null;
+        } catch (e) {
+            localError = e;
+        }
+
+        if (!cloudOk && !localOk) {
+            alert(
+                'Could not watch faction.\n\n' +
+                'Cloud: ' + (cloudError?.message || 'unavailable') + '\n' +
+                'Termux fallback: ' + (localError?.message || 'unavailable')
+            );
+            return;
+        }
+
+        state.selectedFactionId = String(fid);
+
+        try {
+            if (!cloudOk && localOk) {
+                // Switch immediately to the local snapshot rather than waiting for another failed cloud cycle.
+                await useEmergencyFallback(true);
+            } else {
+                await pollServer({ forceCloudRetry: cloudOk });
+            }
+        } catch (e) {}
+
+        if (!state.panelVisible) createPanel();
+        else updatePanelContent();
     }
 
     async function removeWatchedFaction(fid) {
+        if (!isAdminUser()) {
+            alert('Only the tracker administrator can manage watched factions.');
+            return;
+        }
+
         if (String(fid) === String(state.myFactionID)) return;
+
+        let cloudOk = false;
+        let localOk = false;
+        let cloudError = null;
+        let localError = null;
+
         try {
             await cloudRequest('DELETE', '/client/factions/' + encodeURIComponent(fid));
-            if (state.selectedFactionId === fid) state.selectedFactionId = null;
-            state.warFactions.delete(String(fid));
-            saveOpponentFactions();
-            await pollServer();
-            if (state.panelVisible) updatePanelContent();
+            cloudOk = true;
         } catch (e) {
-            alert('Failed: ' + e.message);
+            cloudError = e;
         }
+
+        try {
+            await localFallbackControlRequest('DELETE', '/api/watch/' + encodeURIComponent(fid));
+            localOk = true;
+            fallbackCache = null;
+            fallbackCacheAt = 0;
+            fallbackCacheSource = null;
+        } catch (e) {
+            localError = e;
+        }
+
+        if (!cloudOk && !localOk) {
+            alert(
+                'Could not remove faction.\n\n' +
+                'Cloud: ' + (cloudError?.message || 'unavailable') + '\n' +
+                'Termux fallback: ' + (localError?.message || 'unavailable')
+            );
+            return;
+        }
+
+        if (String(state.selectedFactionId || '') === String(fid)) state.selectedFactionId = null;
+        state.warFactions.delete(String(fid));
+        saveOpponentFactions();
+
+        try {
+            if (!cloudOk && localOk) await useEmergencyFallback(true);
+            else await pollServer({ forceCloudRetry: cloudOk });
+        } catch (e) {}
+
+        if (state.panelVisible) updatePanelContent();
     }
 
     async function addTrackedPlayer(playerId) {
+        if (isEmergencyFallbackActive()) {
+            alert('Individual tracking is temporarily paused while emergency fallback is active.');
+            return;
+        }
+
         if (!state.apiKeySet) {
             alert('Finish your Cloudflare tracker setup first.');
             return;
@@ -1909,6 +2040,11 @@
     }
 
     async function removeTrackedPlayer(playerId) {
+        if (isEmergencyFallbackActive()) {
+            alert('Individual tracking is temporarily paused while emergency fallback is active.');
+            return false;
+        }
+
         try {
             await cloudRequest('DELETE', '/client/subscriptions/' + encodeURIComponent(playerId));
             state.pendingTrackedIds.delete(String(playerId));
@@ -1923,6 +2059,11 @@
     }
 
     async function runTrackedPlayerAction(playerId, actionMode, button = null) {
+        if (isEmergencyFallbackActive()) {
+            alert('Individual tracking is temporarily paused while emergency fallback is active.');
+            return false;
+        }
+
         const id = String(playerId || '').trim();
         const mode = String(actionMode || '').toLowerCase();
 
@@ -2424,6 +2565,7 @@
       .tt-main-mode-tabs { display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:10px;padding:3px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:8px; }
       .tt-main-mode-tab { border:0;border-radius:5px;padding:8px 10px;background:transparent;color:var(--tt-text-soft);font-size:11px;font-weight:800;letter-spacing:0.04em;cursor:pointer;touch-action:manipulation; }
       .tt-main-mode-tab.active { background:rgba(255,255,255,0.11);color:var(--tt-text-main);box-shadow:inset 0 0 0 1px rgba(255,255,255,0.06); }
+      .tt-main-mode-tab:disabled { opacity:0.35;cursor:not-allowed; }
       .tt-main-mode-tab:active { opacity:0.7; }
 
       .tt-admin-entry { position:relative;border:1px solid rgba(255,179,0,0.45);background:rgba(255,179,0,0.10);color:#FFE082;border-radius:6px;padding:7px 9px;font-size:10px;font-weight:900;letter-spacing:0.04em;cursor:pointer;touch-action:manipulation; }
@@ -2711,7 +2853,7 @@
           <div class="tt-help-step"><div class="tt-help-step-num">5</div><div><strong>WATCH LANDING WINDOWS & ALERTS</strong><span>Travel alerts are for OPPONENT factions and individually tracked players; ordinary watched factions stay quiet.</span></div></div>
         </div>
         ${sections}
-        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.6</span></div></div>`;
+        <div class="tt-footer"><div>Built for Torn travel awareness</div><div><span class="tt-kbd">v18.4.8</span></div></div>`;
     }
 
     function bindHelpPanel(panel) {
@@ -2927,7 +3069,7 @@
           <div class="tt-account-title">Faction Registration</div>
           ${factionBody}
         </div>
-        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.6</span></div></div>`;
+        <div class="tt-footer"><div>Account & faction access</div><div><span class="tt-kbd">v18.4.8</span></div></div>`;
     }
 
     function bindAccountPanel(panel) {
@@ -3142,7 +3284,7 @@
         return `<div style="position:sticky;top:-16px;margin:-16px -16px 12px;padding:12px 16px 10px;background:#0B0B0B;z-index:3;border-radius:var(--tt-radius-lg) var(--tt-radius-lg) 0 0;">
           <div class="tt-row"><div class="tt-row-gap"><span style="font-size:22px;">&#9881;</span><div><div style="font-size:16px;font-weight:800;">Tracker Admin</div><div style="font-size:11px;color:var(--tt-text-soft);">Access and user management</div></div></div><div style="display:flex;align-items:center;gap:7px;">${renderHelpEntryButton()}<button id="tt-admin-back" class="tt-admin-action">TRACKER</button><button id="tt-close-panel" style="background:none;border:none;color:var(--tt-text-soft);font-size:24px;cursor:pointer;padding:4px;">&#10005;</button></div></div>
           <div class="tt-admin-tabs"><button class="tt-admin-tab ${state.adminSection === 'requests' ? 'active' : ''}" data-admin-section="requests">REQUESTS${pending ? `<span class="tt-admin-badge">${pending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'applications' ? 'active' : ''}" data-admin-section="applications">APPS${factionPending ? `<span class="tt-admin-badge">${factionPending}</span>` : ''}</button><button class="tt-admin-tab ${state.adminSection === 'users' ? 'active' : ''}" data-admin-section="users">USERS</button><button class="tt-admin-tab ${state.adminSection === 'factions' ? 'active' : ''}" data-admin-section="factions">FACTIONS</button></div>
-        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.6</span></div></div>`;
+        </div>${body}<div class="tt-footer"><div>Admin controls</div><div><span class="tt-kbd">v18.4.8</span></div></div>`;
     }
 
     async function adminRefreshAndRender() {
@@ -3308,9 +3450,10 @@
     }
 
     function renderMainModeTabs() {
+        const fallback = isEmergencyFallbackActive();
         return `<div class="tt-main-mode-tabs">
             <button class="tt-main-mode-tab ${state.panelMode === 'factions' ? 'active' : ''}" data-panel-mode="factions">FACTIONS</button>
-            <button class="tt-main-mode-tab ${state.panelMode === 'individuals' ? 'active' : ''}" data-panel-mode="individuals">INDIVIDUALS</button>
+            <button class="tt-main-mode-tab ${state.panelMode === 'individuals' ? 'active' : ''}" data-panel-mode="individuals" ${fallback ? 'disabled title="Paused during emergency fallback"' : ''}>${fallback ? 'INDIVIDUALS • PAUSED' : 'INDIVIDUALS'}</button>
         </div>`;
     }
 
@@ -3325,7 +3468,7 @@
         const source = state.dataSource === 'local' ? 'LOCAL TERMUX' : 'GITHUB GIST';
         const ageSeconds = state.fallbackUpdatedAt ? Math.max(0, Math.round((Date.now() - state.fallbackUpdatedAt) / 1000)) : null;
         const age = ageSeconds === null ? '' : ' • data ' + (ageSeconds < 60 ? ageSeconds + 's' : Math.floor(ageSeconds / 60) + 'm') + ' old';
-        return `<div style="margin-top:8px;padding:8px 10px;border:1px solid rgba(255,152,0,.35);border-radius:10px;background:rgba(255,152,0,.08);font-size:11px;line-height:1.4;color:var(--tt-text-soft);"><strong style="color:#fff;">EMERGENCY ${source}</strong>${age}<br>Faction state remains live. Cloud account changes and fresh individual-target control are temporarily unavailable.</div>`;
+        return `<div style="margin-top:8px;padding:8px 10px;border:1px solid rgba(255,152,0,.35);border-radius:10px;background:rgba(255,152,0,.08);font-size:11px;line-height:1.4;color:var(--tt-text-soft);"><strong style="color:#fff;">EMERGENCY ${source}</strong>${age}<br>Faction state remains live. Individual tracking is paused until Cloud mode returns.</div>`;
     }
 
     function bindMainModeTabs(panel) {
@@ -3334,6 +3477,7 @@
                 e.stopPropagation();
                 const mode = btn.dataset.panelMode;
                 if (!mode || mode === state.panelMode) return;
+                if (mode === 'individuals' && isEmergencyFallbackActive()) return;
                 state.panelMode = mode;
                 state.selectedFactionId = null;
                 state.activeTab = 'all';
@@ -3345,7 +3489,7 @@
     // ==================== PANEL ====================
     function createPanel(mode = 'factions') {
         const nextMode =
-            mode === 'individuals'
+            mode === 'individuals' && !isEmergencyFallbackActive()
                 ? 'individuals'
                 : mode === 'account'
                     ? 'account'
@@ -4589,7 +4733,7 @@
         const welcomeHtml = renderFirstRunWelcomeCard();
 
         if (!trackedIds.length) {
-            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+            return headerHtml + welcomeHtml + `<div class="tt-player-empty">No individual players tracked.<br><span style="display:inline-block;margin-top:5px;font-size:11px;">Open a Torn player profile and use TRACK, or tap TRACK here and enter their player ID.</span></div><div class="tt-footer"><div>Individual tracker</div><div><span class="tt-kbd">v18.4.8</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
         }
 
         const members = trackedIds.map(xid => getMemberDisplayState({ ...state.trackedIndividuals[xid], xid }));
@@ -4622,7 +4766,7 @@
             }
         }
 
-        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        return headerHtml + welcomeHtml + cards + `<div class="tt-footer"><div>TRACK / UNTRACK only</div><div><span class="tt-kbd">v18.4.8</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
     }
 
     function bindIndividualTrackerPanel(panel) {
@@ -4716,7 +4860,7 @@
             <button id="tt-register-invite" class="tt-onboard-legacy">Legacy invite / recovery</button>
           </div>
 
-          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.6</span></div>
+          <div class="tt-onboard-footer"><span>One-key setup</span><span class="tt-kbd">v18.4.8</span></div>
         </div>`;
     }
 
@@ -4767,7 +4911,7 @@
                 </div>
               </div>
 
-              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.6</span></div>
+              <div class="tt-onboard-footer"><span>Access required</span><span class="tt-kbd">v18.4.8</span></div>
             </div>`;
         }
 
@@ -4801,7 +4945,7 @@
             <div class="tt-onboard-auto-note"><span class="tt-onboard-note-dot ${ready ? 'tt-onboard-note-dot--approved' : ''}"></span><span>${ready ? 'Approval received. You can connect now.' : 'Status refreshes automatically every 30 seconds.'}</span></div>
           </div>
 
-          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.6</span></div>
+          <div class="tt-onboard-footer"><span>${ready ? 'Approved' : 'Personal Access request'}</span><span class="tt-kbd">v18.4.8</span></div>
         </div>`;
     }
 
@@ -4961,7 +5105,7 @@
             bodyHtml = renderFactionList();
         }
 
-        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.6</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
+        panel.innerHTML = headerHtml + renderFirstRunWelcomeCard() + bodyHtml + `<div class="tt-footer"><div><span style="font-weight:600;">Legend</span><span style="margin-left:6px;font-size:11px;"><span style="color:var(--tt-accent);">\u25A0</span> Out <span style="color:var(--tt-purple);margin-left:6px;">\u25A0</span> Return <span style="color:var(--tt-warning);margin-left:6px;">\u25A0</span> Landing</span></div><div><span class="tt-kbd">v18.4.8</span><span style="margin-left:6px;font-size:11px;">FF BS</span></div></div>`;
 
         document.getElementById('tt-close-panel')?.addEventListener('click', closePanel);
         bindMainModeTabs(panel);
@@ -5235,13 +5379,15 @@
         if (isFactionProfilePage() && currentFid) {
             const isWatched = !!state.watchedFactions[currentFid];
             const isOwn = String(currentFid) === String(state.myFactionID);
-            const watchDisabled = isOwn ? 'disabled' : '';
+            const canManageWatch = isAdminUser();
 
             html += `<div class="tt-row" style="margin-bottom:10px;">
         <div class="tt-section-title">Watched factions</div>
-        <button id="tt-watch-faction-header" class="tt-watch-btn ${isWatched ? 'tt-watch-btn--active' : ''}" ${watchDisabled}>
-          ${isOwn ? 'OWN \u2713' : (isWatched ? 'WATCHING \u2713' : 'WATCH')}
-        </button>
+        ${isOwn
+            ? '<button class="tt-watch-btn tt-watch-btn--active" disabled>OWN \u2713</button>'
+            : canManageWatch
+                ? `<button id="tt-watch-faction-header" class="tt-watch-btn ${isWatched ? 'tt-watch-btn--active' : ''}">${isWatched ? 'WATCHING \u2713' : 'WATCH'}</button>`
+                : '<span class="tt-chip tt-chip-soft">ADMIN MANAGED</span>'}
       </div>`;
         } else {
             html += '<div class="tt-section-title" style="margin-bottom:8px;">Watched factions</div>';
